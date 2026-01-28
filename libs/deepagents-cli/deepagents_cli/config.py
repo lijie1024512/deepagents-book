@@ -153,6 +153,7 @@ class Settings:
     openai_api_key: str | None
     anthropic_api_key: str | None
     google_api_key: str | None
+    deepseek_api_key: str | None
     tavily_api_key: str | None
 
     # LangSmith configuration
@@ -161,7 +162,7 @@ class Settings:
 
     # Model configuration
     model_name: str | None = None  # Currently active model name
-    model_provider: str | None = None  # Provider (openai, anthropic, google)
+    model_provider: str | None = None  # Provider (openai, anthropic, google, deepseek)
 
     # Project information
     project_root: Path | None = None
@@ -180,6 +181,7 @@ class Settings:
         openai_key = os.environ.get("OPENAI_API_KEY")
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
 
         # Detect LangSmith configuration
@@ -197,6 +199,7 @@ class Settings:
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
+            deepseek_api_key=deepseek_key,
             tavily_api_key=tavily_key,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
@@ -217,6 +220,11 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
+
+    @property
+    def has_deepseek(self) -> bool:
+        """Check if DeepSeek API key is configured."""
+        return self.deepseek_api_key is not None
 
     @property
     def has_tavily(self) -> bool:
@@ -370,6 +378,83 @@ class Settings:
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
 
+    def get_builtin_skills_dir(self) -> Path:
+        """Get the built-in skills directory (shipped with deepagents-cli).
+
+        Returns:
+            Path to the deepagents_cli/skills/ directory
+        """
+        return Path(__file__).parent / "skills"
+
+
+def extract_builtin_skills() -> None:
+    """Extract all .skill files in the built-in skills directory.
+
+    This function scans the deepagents_cli/skills directory for .skill files
+    and extracts them to corresponding directories if not already extracted.
+    Should be called at CLI startup.
+    """
+    import io
+    import zipfile
+
+    builtin_dir = settings.get_builtin_skills_dir()
+    if not builtin_dir.exists():
+        return
+
+    for skill_file in builtin_dir.glob("*.skill"):
+        # Expected directory name (e.g., "novel-generator.skill" -> "novel-generator")
+        dir_name = skill_file.stem
+        target_dir = builtin_dir / dir_name
+
+        # Check if already extracted and up-to-date
+        skill_md_path = target_dir / "SKILL.md"
+        if skill_md_path.exists():
+            # Compare modification times
+            if skill_md_path.stat().st_mtime >= skill_file.stat().st_mtime:
+                continue  # Already extracted and up-to-date
+
+        # Need to extract
+        try:
+            with zipfile.ZipFile(skill_file, "r") as zip_ref:
+                # Find the root directory in the ZIP
+                root_dirs = {name.split("/")[0] for name in zip_ref.namelist() if "/" in name}
+                if not root_dirs:
+                    console.print(f"[yellow]Warning: No root directory in {skill_file.name}[/yellow]")
+                    continue
+
+                root_dir = list(root_dirs)[0]
+
+                # Check if SKILL.md exists
+                skill_md_in_zip = f"{root_dir}/SKILL.md"
+                if skill_md_in_zip not in zip_ref.namelist():
+                    console.print(f"[yellow]Warning: SKILL.md not found in {skill_file.name}[/yellow]")
+                    continue
+
+                # Create target directory
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                # Extract all files
+                for zip_info in zip_ref.infolist():
+                    if zip_info.is_dir():
+                        continue
+                    if not zip_info.filename.startswith(root_dir + "/"):
+                        continue
+
+                    rel_path = zip_info.filename[len(root_dir) + 1:]
+                    if not rel_path:
+                        continue
+
+                    target_file = target_dir / rel_path
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    target_file.write_bytes(zip_ref.read(zip_info.filename))
+
+                console.print(f"[dim]Extracted built-in skill: {dir_name}[/dim]")
+
+        except zipfile.BadZipFile:
+            console.print(f"[yellow]Warning: Invalid ZIP file: {skill_file.name}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Failed to extract {skill_file.name}: {e}[/yellow]")
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()
@@ -408,7 +493,7 @@ def _detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from
 
     Returns:
-        Provider name (openai, anthropic, google) or None if can't detect
+        Provider name (openai, anthropic, google, deepseek) or None if can't detect
     """
     model_lower = model_name.lower()
     if any(x in model_lower for x in ["gpt", "o1", "o3"]):
@@ -417,6 +502,8 @@ def _detect_provider(model_name: str) -> str | None:
         return "anthropic"
     if "gemini" in model_lower:
         return "google"
+    if "deepseek" in model_lower:
+        return "deepseek"
     return None
 
 
@@ -446,6 +533,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             console.print("  - OpenAI: gpt-*, o1-*, o3-*")
             console.print("  - Anthropic: claude-*")
             console.print("  - Google: gemini-*")
+            console.print("  - DeepSeek: deepseek-*")
             sys.exit(1)
 
         # Check if API key for detected provider is available
@@ -464,12 +552,20 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
             )
             sys.exit(1)
+        elif provider == "deepseek" and not settings.has_deepseek:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires DEEPSEEK_API_KEY"
+            )
+            sys.exit(1)
 
         model_name = model_name_override
     # Use environment variable defaults, detect provider by API key priority
     elif settings.has_openai:
         provider = "openai"
         model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+    elif settings.has_deepseek:
+        provider = "deepseek"
+        model_name = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     elif settings.has_anthropic:
         provider = "anthropic"
         model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
@@ -480,10 +576,13 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         console.print("[bold red]Error:[/bold red] No API key configured.")
         console.print("\nPlease set one of the following environment variables:")
         console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
+        console.print("  - DEEPSEEK_API_KEY   (for DeepSeek models like deepseek-chat)")
         console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
         console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
         console.print("\nExample:")
         console.print("  export OPENAI_API_KEY=your_api_key_here")
+        console.print("  # On Windows (PowerShell):")
+        console.print("  $env:OPENAI_API_KEY='your_api_key_here'")
         console.print("\nOr add it to your .env file.")
         sys.exit(1)
 
@@ -496,6 +595,17 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(model=model_name)
+    if provider == "deepseek":
+        from langchain_openai import ChatOpenAI
+
+        # DeepSeek uses OpenAI-compatible API
+        base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+        api_key = settings.deepseek_api_key
+        return ChatOpenAI(
+            model=model_name,
+            base_url=base_url,
+            api_key=api_key,
+        )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 

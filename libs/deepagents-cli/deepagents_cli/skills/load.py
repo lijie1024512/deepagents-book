@@ -26,27 +26,41 @@ __all__ = ["SkillMetadata", "list_skills"]
 
 
 def list_skills(
-    *, user_skills_dir: Path | None = None, project_skills_dir: Path | None = None
+    *,
+    user_skills_dir: Path | None = None,
+    project_skills_dir: Path | None = None,
+    builtin_skills_dir: Path | None = None,
 ) -> list[ExtendedSkillMetadata]:
-    """List skills from user and/or project directories.
+    """List skills from builtin, user and/or project directories.
 
     This is a CLI-specific wrapper around the prebuilt middleware's skill loading
     functionality. It uses FilesystemBackend to load skills from local directories.
 
-    When both directories are provided, project skills with the same name as
-    user skills will override them (project skills take precedence).
+    Priority order (later overrides earlier):
+    1. builtin skills (shipped with deepagents-cli)
+    2. user skills (~/.deepagents/{agent}/skills/)
+    3. project skills ({project}/.deepagents/skills/)
 
     Args:
         user_skills_dir: Path to the user-level skills directory.
         project_skills_dir: Path to the project-level skills directory.
+        builtin_skills_dir: Path to the built-in skills directory (deepagents_cli/skills).
 
     Returns:
-        Merged list of skill metadata from both sources, with project skills
-        taking precedence over user skills when names conflict.
+        Merged list of skill metadata from all sources, with project skills
+        taking precedence over user skills, and user over builtin.
     """
     all_skills: dict[str, ExtendedSkillMetadata] = {}
 
-    # Load user skills first (foundation)
+    # Load builtin skills first (lowest priority)
+    if builtin_skills_dir and builtin_skills_dir.exists():
+        builtin_backend = FilesystemBackend(root_dir=str(builtin_skills_dir))
+        builtin_skills = list_skills_from_backend(backend=builtin_backend, source_path=".")
+        for skill in builtin_skills:
+            extended_skill: ExtendedSkillMetadata = {**skill, "source": "builtin"}
+            all_skills[skill["name"]] = extended_skill
+
+    # Load user skills second
     if user_skills_dir and user_skills_dir.exists():
         user_backend = FilesystemBackend(root_dir=str(user_skills_dir))
         user_skills = list_skills_from_backend(backend=user_backend, source_path=".")
@@ -55,7 +69,7 @@ def list_skills(
             extended_skill: ExtendedSkillMetadata = {**skill, "source": "user"}
             all_skills[skill["name"]] = extended_skill
 
-    # Load project skills second (override/augment)
+    # Load project skills last (highest priority, override/augment)
     if project_skills_dir and project_skills_dir.exists():
         project_backend = FilesystemBackend(root_dir=str(project_skills_dir))
         project_skills = list_skills_from_backend(backend=project_backend, source_path=".")

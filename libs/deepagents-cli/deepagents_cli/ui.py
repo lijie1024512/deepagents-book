@@ -239,5 +239,5 @@ def show_help() -> None:
     console.print("  Shift+Tab       Toggle auto-approve mode", style=COLORS["dim"])
     console.print("  @filename       Auto-complete files and inject content", style=COLORS["dim"])
     console.print("  /command        Slash commands (/help, /clear, /quit)", style=COLORS["dim"])
-    console.print("  !command        Run bash commands directly", style=COLORS["dim"])
+    console.print("  !command        Run shell commands directly", style=COLORS["dim"])
     console.print()

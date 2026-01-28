@@ -212,11 +212,13 @@ class FilesystemBackend(BackendProtocol):
                         relative_path = abs_path[len(cwd_str) :]
                     elif abs_path.startswith(str(self.cwd)):
                         # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
+                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/").lstrip("\\")
                     else:
                         # Path is outside cwd, return as-is or skip
                         relative_path = abs_path
 
+                    # Normalize path separators (Windows uses \, we use /)
+                    relative_path = relative_path.replace("\\", "/")
                     virt_path = "/" + relative_path
 
                     if is_file:

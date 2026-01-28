@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -218,9 +219,10 @@ class DeepAgentsApp(App):
     CSS_PATH = "app.tcss"
     ENABLE_COMMAND_PALETTE = False
 
-    # Slow down scroll speed (default is 3 lines per scroll event)
-    # Using 0.25 to require 4 scroll events per line - very smooth
-    SCROLL_SENSITIVITY_Y = 0.25
+    # Scroll speed: default is 3 lines per scroll event
+    # Windows terminals send fewer scroll events, so we use 1.0 for better responsiveness
+    # macOS/Linux can use lower values (0.25-0.5) for smoother scrolling
+    SCROLL_SENSITIVITY_Y = 3.0 if sys.platform == "win32" else 0.5
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -231,6 +233,11 @@ class DeepAgentsApp(App):
             "shift+tab", "toggle_auto_approve", "Toggle Auto-Approve", show=False, priority=True
         ),
         Binding("ctrl+o", "toggle_tool_output", "Toggle Tool Output", show=False),
+        # Keyboard scrolling (works on Windows terminals that don't support mouse wheel)
+        Binding("pageup", "scroll_up", "Scroll Up", show=False),
+        Binding("pagedown", "scroll_down", "Scroll Down", show=False),
+        Binding("ctrl+home", "scroll_top", "Scroll Top", show=False),
+        Binding("ctrl+end", "scroll_bottom", "Scroll Bottom", show=False),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),
@@ -367,14 +374,23 @@ class DeepAgentsApp(App):
             self._status_bar.hide_tokens()
 
     def _scroll_chat_to_bottom(self) -> None:
-        """Scroll the chat area to the bottom.
+        """Smart scroll: only auto-scroll if user is near bottom.
 
-        Uses anchor() for smoother streaming - keeps scroll locked to bottom
-        as new content is added without causing visual jumps.
+        This prevents interrupting users who are reading history while
+        still providing auto-scroll for users watching new output.
+        Similar to Slack/Discord behavior.
         """
         chat = self.query_one("#chat", VerticalScroll)
-        if chat.virtual_size.height > chat.size.height:
-            chat.anchor()
+
+        # Check if user is near bottom (within 50 pixels)
+        # or if content doesn't exceed viewport
+        is_near_bottom = (
+            chat.max_scroll_y == 0  # Content fits in viewport
+            or chat.scroll_y >= chat.max_scroll_y - 50  # User near bottom
+        )
+
+        if is_near_bottom:
+            chat.scroll_end(animate=False)  # Scroll to bottom without locking
 
     async def _show_thinking(self) -> None:
         """Show or reposition the thinking spinner at the bottom of messages."""
@@ -874,6 +890,39 @@ class DeepAgentsApp(App):
         except Exception:
             pass
 
+    # Keyboard scrolling actions (for Windows terminals without mouse wheel support)
+    def action_scroll_up(self) -> None:
+        """Scroll chat area up by one page."""
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.scroll_page_up(animate=False)
+        except Exception:
+            pass
+
+    def action_scroll_down(self) -> None:
+        """Scroll chat area down by one page."""
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.scroll_page_down(animate=False)
+        except Exception:
+            pass
+
+    def action_scroll_top(self) -> None:
+        """Scroll chat area to the top."""
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.scroll_home(animate=False)
+        except Exception:
+            pass
+
+    def action_scroll_bottom(self) -> None:
+        """Scroll chat area to the bottom."""
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.scroll_end(animate=False)
+        except Exception:
+            pass
+
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending AND input is not focused
     def action_approval_up(self) -> None:
@@ -923,10 +972,24 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
-    def on_click(self, _event: Click) -> None:
-        """Handle clicks anywhere in the terminal to focus on the command line."""
+    def on_click(self, event: Click) -> None:
+        """Handle clicks in the terminal to focus on the command line.
+
+        Excludes clicks on the scrollbar area (rightmost 3 columns) to allow
+        scrollbar interaction on Windows terminals.
+        """
         if not self._chat_input:
             return
+
+        # Don't steal focus if clicking on scrollbar area (right edge)
+        # This allows scrollbar clicks to work properly on Windows
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            scrollbar_width = 3  # Typical scrollbar width
+            if event.screen_x >= chat.size.width - scrollbar_width:
+                return  # Let scrollbar handle the click
+        except Exception:
+            pass
 
         self.call_after_refresh(self._chat_input.focus_input)
 

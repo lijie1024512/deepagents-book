@@ -1,0 +1,62 @@
+{
+  // 终端性能优化配置
+  "terminal.integrated.defaultProfile.windows": "Git Bash",
+  
+  // 优化终端性能
+  "terminal.integrated.rendererType": "dom",
+  "terminal.integrated.gpuAcceleration": "auto",
+  "terminal.integrated.smoothScrolling": true,
+  
+  // 减少终端历史记录大小（提高性能）
+  "terminal.integrated.scrollback": 1000,
+  
+  // 禁用不必要的终端功能
+  "terminal.integrated.enablePersistentSessions": false,
+  
+  // Git Bash 特定配置
+  "terminal.integrated.profiles.windows": {
+    "Git Bash": {
+      "path": "D:\\Program Files\\Git\\bin\\bash.exe",
+      "args": [
+        "--login"
+      ],
+      "icon": "terminal-bash",
+      "env": {
+        "MSYS": "winsymlinks:nativestrict"
+      }
+    },
+    "Git Bash (Fast)": {
+      "path": "D:\\Program Files\\Git\\bin\\bash.exe",
+      "args": [
+        "--no-profile",
+        "--norc"
+      ],
+      "icon": "terminal-bash"
+    },
+    "PowerShell": {
+      "source": "PowerShell",
+      "icon": "terminal-powershell"
+    },
+    "Command Prompt": {
+      "path": [
+        "${env:windir}\\System32\\cmd.exe"
+      ],
+      "icon": "terminal-cmd"
+    }
+  },
+  
+  // 如果 Git Bash 仍然慢，可以切换到 PowerShell
+  // "terminal.integrated.defaultProfile.windows": "PowerShell",
+  
+  // 文件监控优化（减少文件系统扫描）
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/**": true,
+    "**/__pycache__/**": true,
+    "**/.pytest_cache/**": true,
+    "**/.mypy_cache/**": true,
+    "**/.ruff_cache/**": true
+  }
+}
+

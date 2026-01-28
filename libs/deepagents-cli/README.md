@@ -65,19 +65,21 @@ Type naturally as you would in a chat interface. The agent will use its built-in
 
 ## Model Configuration
 
-The CLI supports OpenAI, Anthropic, and Google models. It automatically selects a provider based on which API keys are available. If multiple keys are set, it uses the first match in this order:
+The CLI supports OpenAI, DeepSeek, Anthropic, and Google models. It automatically selects a provider based on which API keys are available. If multiple keys are set, it uses the first match in this order:
 
 | Priority | API key | Default model |
 |----------|---------|---------------|
 | 1st | `OPENAI_API_KEY` | `gpt-5-mini` |
-| 2nd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
-| 3rd | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
+| 2nd | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| 3rd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
+| 4th | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
 
 To use a different model, pass the `--model` flag:
 
 ```bash
 deepagents --model claude-opus-4-5-20251101
 deepagents --model gpt-4o
+deepagents --model deepseek-chat
 deepagents --model gemini-2.5-pro
 ```
 
@@ -86,8 +88,29 @@ The CLI auto-detects the provider from the model name and requires the correspon
 **Model name conventions:**
 
 - **OpenAI**: See [OpenAI Models Documentation](https://platform.openai.com/docs/models)
+- **DeepSeek**: See [DeepSeek API Documentation](https://platform.deepseek.com/api-docs/) (OpenAI-compatible API)
 - **Anthropic**: See [Anthropic Models Documentation](https://docs.anthropic.com/en/docs/about-claude/models)
 - **Google**: See [Google Gemini Models Documentation](https://ai.google.dev/gemini-api/docs/models/gemini)
+
+**Environment Variables:**
+
+You can configure the API keys and model preferences via environment variables:
+
+```bash
+# Linux/macOS
+export OPENAI_API_KEY=your_key_here
+export DEEPSEEK_API_KEY=your_key_here
+export DEEPSEEK_BASE_URL=https://api.deepseek.com/v1  # Optional, defaults to this
+export DEEPSEEK_MODEL=deepseek-chat  # Optional, defaults to deepseek-chat
+
+# Windows (PowerShell)
+$env:OPENAI_API_KEY='your_key_here'
+$env:DEEPSEEK_API_KEY='your_key_here'
+$env:DEEPSEEK_BASE_URL='https://api.deepseek.com/v1'
+$env:DEEPSEEK_MODEL='deepseek-chat'
+
+# Or add to your .env file
+```
 
 ## Built-in Tools
 

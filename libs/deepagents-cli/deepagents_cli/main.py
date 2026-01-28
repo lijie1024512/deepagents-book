@@ -178,7 +178,106 @@ def parse_args() -> argparse.Namespace:
         "--sandbox-setup",
         help="Path to setup script to run in sandbox after creation",
     )
+    parser.add_argument(
+        "--terminal",
+        action="store_true",
+        help="Use pure terminal mode (Rich) instead of TUI. Better for Windows terminals.",
+    )
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Force TUI mode (Textual). Default on macOS/Linux.",
+    )
     return parser.parse_args()
+
+
+async def run_terminal_cli_async(
+    assistant_id: str,
+    *,
+    auto_approve: bool = False,
+    sandbox_type: str = "none",
+    sandbox_id: str | None = None,
+    model_name: str | None = None,
+    thread_id: str | None = None,
+    is_resumed: bool = False,
+    initial_prompt: str | None = None,
+) -> None:
+    """Run the pure terminal CLI interface using Rich (async version).
+
+    This mode works better on Windows terminals where TUI mouse events
+    are not properly forwarded. Uses terminal's native scrolling.
+
+    Args:
+        assistant_id: Agent identifier for memory storage
+        auto_approve: Whether to auto-approve tool usage
+        sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
+        sandbox_id: Optional existing sandbox ID to reuse
+        model_name: Optional model name to use
+        thread_id: Thread ID to use (new or resumed)
+        is_resumed: Whether this is a resumed session
+        initial_prompt: Optional prompt to auto-submit when session starts
+    """
+    from deepagents_cli.rich_adapter import run_rich_cli
+
+    model = create_model(model_name)
+
+    # Show thread info
+    if is_resumed:
+        console.print(f"[green]Resuming thread:[/green] {thread_id}")
+    else:
+        console.print(f"[dim]Thread: {thread_id}[/dim]")
+
+    # Use async context manager for checkpointer
+    async with get_checkpointer() as checkpointer:
+        # Create agent with conditional tools
+        tools = [http_request, fetch_url]
+        if settings.has_tavily:
+            tools.append(web_search)
+
+        # Handle sandbox mode
+        sandbox_backend = None
+        sandbox_cm = None
+
+        if sandbox_type != "none":
+            try:
+                sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
+                sandbox_backend = sandbox_cm.__enter__()
+            except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
+                console.print()
+                console.print("[red]❌ Sandbox creation failed[/red]")
+                console.print(Text(str(e), style="dim"))
+                sys.exit(1)
+
+        try:
+            agent, composite_backend = create_cli_agent(
+                model=model,
+                assistant_id=assistant_id,
+                tools=tools,
+                sandbox=sandbox_backend,
+                sandbox_type=sandbox_type if sandbox_type != "none" else None,
+                auto_approve=auto_approve,
+                checkpointer=checkpointer,
+            )
+
+            # Run Rich terminal CLI
+            await run_rich_cli(
+                agent=agent,
+                assistant_id=assistant_id,
+                backend=composite_backend,
+                auto_approve=auto_approve,
+                cwd=str(Path.cwd()),
+                thread_id=thread_id,
+                initial_prompt=initial_prompt,
+            )
+        except Exception as e:
+            error_text = Text("❌ Failed to create agent: ", style="red")
+            error_text.append(str(e))
+            console.print(error_text)
+            sys.exit(1)
+        finally:
+            if sandbox_cm is not None:
+                with contextlib.suppress(Exception):
+                    sandbox_cm.__exit__(None, None, None)
 
 
 async def run_textual_cli_async(
@@ -353,9 +452,26 @@ def cli_main() -> None:
             if thread_id is None:
                 thread_id = generate_thread_id()
 
-            # Run Textual CLI
+            # Determine UI mode: --terminal forces Rich, --tui forces Textual
+            # Default: Windows uses terminal mode, others use TUI
+            use_terminal_mode = getattr(args, "terminal", False)
+            use_tui_mode = getattr(args, "tui", False)
+            
+            if use_terminal_mode:
+                # Explicitly requested terminal mode
+                run_func = run_terminal_cli_async
+            elif use_tui_mode:
+                # Explicitly requested TUI mode
+                run_func = run_textual_cli_async
+            elif sys.platform == "win32":
+                # Windows default: terminal mode (better scrolling support)
+                run_func = run_terminal_cli_async
+            else:
+                # macOS/Linux default: TUI mode
+                run_func = run_textual_cli_async
+
             asyncio.run(
-                run_textual_cli_async(
+                run_func(
                     assistant_id=args.agent,
                     auto_approve=args.auto_approve,
                     sandbox_type=args.sandbox,

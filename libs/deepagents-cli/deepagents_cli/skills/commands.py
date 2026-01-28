@@ -95,11 +95,12 @@ def _list(agent: str, *, project: bool = False) -> None:
     Args:
         agent: Agent identifier for skills (default: agent).
         project: If True, show only project skills.
-            If False, show all skills (user + project).
+            If False, show all skills (builtin + user + project).
     """
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
+    builtin_skills_dir = settings.get_builtin_skills_dir()
 
     # If --project flag is used, only show project skills
     if project:
@@ -126,8 +127,12 @@ def _list(agent: str, *, project: bool = False) -> None:
         skills = list_skills(user_skills_dir=None, project_skills_dir=project_skills_dir)
         console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
     else:
-        # Load both user and project skills
-        skills = list_skills(user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir)
+        # Load builtin, user, and project skills
+        skills = list_skills(
+            builtin_skills_dir=builtin_skills_dir,
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+        )
 
         if not skills:
             console.print("[yellow]No skills found.[/yellow]")
@@ -325,11 +330,12 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     Args:
         skill_name: Name of the skill to show info for.
         agent: Agent identifier for skills (default: agent).
-        project: If True, only search in project skills. If False, search in both user and project skills.
+        project: If True, only search in project skills. If False, search in all skills.
     """
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
+    builtin_skills_dir = settings.get_builtin_skills_dir()
 
     # Load skills based on --project flag
     if project:
@@ -338,7 +344,11 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
             return
         skills = list_skills(user_skills_dir=None, project_skills_dir=project_skills_dir)
     else:
-        skills = list_skills(user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir)
+        skills = list_skills(
+            builtin_skills_dir=builtin_skills_dir,
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+        )
 
     # Find the skill
     skill = next((s for s in skills if s["name"] == skill_name), None)

@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
+from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
@@ -21,7 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
-from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
+from deepagents_cli.config import COLORS, config, console, extract_builtin_skills, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.shell import ShellMiddleware
@@ -130,10 +130,12 @@ The filesystem backend is currently operating in: `{cwd}`
 ### File System and Paths
 
 **IMPORTANT - Path Handling:**
-- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
-- Use the working directory to construct absolute paths
-- Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
-- Never use relative paths - always construct full absolute paths
+- All file paths must be **virtual paths** starting with `/` (e.g., `/file.txt`, `/research_project/file.md`)
+- Virtual paths are relative to the current working directory: `{cwd}`
+- Example: To access `{cwd}/research_project/file.md`, use the virtual path `/research_project/file.md`
+- Example: To access `{cwd}/file.txt`, use the virtual path `/file.txt`
+- **Never use Windows absolute paths** (e.g., `C:\\...` or `E:\\...`) - always use virtual paths starting with `/`
+- **Never use relative paths** without leading `/` - always start paths with `/`
 
 """
 
@@ -142,8 +144,8 @@ The filesystem backend is currently operating in: `{cwd}`
         + f"""### Skills Directory
 
 Your skills are stored at: `{agent_dir_path}/skills/`
-Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
-Example: `bash python {agent_dir_path}/skills/web-research/script.py`
+Skills may contain scripts or supporting files. When executing skill scripts, use the real filesystem path:
+Example: `python {agent_dir_path}/skills/web-research/script.py`
 
 ### Human-in-the-Loop Tool Approval
 
@@ -375,39 +377,112 @@ def create_cli_agent(
     # Skills directories (if enabled)
     skills_dir = None
     project_skills_dir = None
+    builtin_skills_dir = None
     if enable_skills:
         skills_dir = settings.ensure_user_skills_dir(assistant_id)
         project_skills_dir = settings.get_project_skills_dir()
+        builtin_skills_dir = settings.get_builtin_skills_dir()
+        # Auto-extract .skill files in builtin skills directory
+        extract_builtin_skills()
 
     # Build middleware stack based on enabled features
     agent_middleware = []
 
     # Add memory middleware
     if enable_memory:
-        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
+        # Create factory function for memory backend with Windows path support
+        def create_memory_backend(runtime):
+            routes = {}
+            
+            # 用户 memory 文件
+            user_memory_path = settings.get_user_agent_md_path(assistant_id)
+            if user_memory_path:
+                # 为 memory 文件创建 backend，使用父目录作为 root_dir
+                user_memory_dir = user_memory_path.parent
+                user_memory_backend = FilesystemBackend(root_dir=str(user_memory_dir), virtual_mode=True)
+                routes["/memory/user/"] = user_memory_backend
+            
+            # 项目 memory 文件
+            project_agent_md = settings.get_project_agent_md_path()
+            if project_agent_md:
+                project_memory_dir = project_agent_md.parent
+                project_memory_backend = FilesystemBackend(root_dir=str(project_memory_dir), virtual_mode=True)
+                routes["/memory/project/"] = project_memory_backend
+            
+            # 创建 CompositeBackend
+            if routes:
+                return CompositeBackend(
+                    default=StateBackend(runtime),
+                    routes=routes
+                )
+            else:
+                # 如果没有 routes，使用 StateBackend
+                return StateBackend(runtime)
+        
+        # 获取 memory sources（虚拟路径）
+        memory_sources = []
+        if settings.get_user_agent_md_path(assistant_id):
+            memory_sources.append("/memory/user/AGENTS.md")
         project_agent_md = settings.get_project_agent_md_path()
         if project_agent_md:
-            memory_sources.append(str(project_agent_md))
-
-        agent_middleware.append(
-            MemoryMiddleware(
-                backend=FilesystemBackend(),
-                sources=memory_sources,
+            memory_sources.append("/memory/project/AGENTS.md")
+        
+        if memory_sources:
+            agent_middleware.append(
+                MemoryMiddleware(
+                    backend=create_memory_backend,
+                    sources=memory_sources,
+                )
             )
-        )
 
     # Add skills middleware
     if enable_skills:
-        sources = [str(skills_dir)]
+        # Create factory function for skills backend with Windows path support
+        def create_skills_backend(runtime):
+            routes = {}
+            
+            # 内置 skills 目录（优先级最低，可被用户和项目覆盖）
+            if builtin_skills_dir and builtin_skills_dir.exists():
+                builtin_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
+                routes["/skills/builtin/"] = builtin_backend
+            
+            # 用户 skills 目录
+            if skills_dir:
+                user_backend = FilesystemBackend(root_dir=str(skills_dir), virtual_mode=True)
+                routes["/skills/user/"] = user_backend
+            
+            # 项目 skills 目录（优先级最高）
+            if project_skills_dir:
+                project_backend = FilesystemBackend(root_dir=str(project_skills_dir), virtual_mode=True)
+                routes["/skills/project/"] = project_backend
+            
+            # 创建 CompositeBackend
+            if routes:
+                return CompositeBackend(
+                    default=StateBackend(runtime),
+                    routes=routes
+                )
+            else:
+                # 如果没有 routes，使用 StateBackend
+                return StateBackend(runtime)
+        
+        # 获取 skills sources（虚拟路径）
+        # 顺序：内置 -> 用户 -> 项目（后面的可以覆盖前面的）
+        skills_sources = []
+        if builtin_skills_dir and builtin_skills_dir.exists():
+            skills_sources.append("/skills/builtin/")
+        if skills_dir:
+            skills_sources.append("/skills/user/")
         if project_skills_dir:
-            sources.append(str(project_skills_dir))
-
-        agent_middleware.append(
-            SkillsMiddleware(
-                backend=FilesystemBackend(),
-                sources=sources,
+            skills_sources.append("/skills/project/")
+        
+        if skills_sources:
+            agent_middleware.append(
+                SkillsMiddleware(
+                    backend=create_skills_backend,
+                    sources=skills_sources,
+                )
             )
-        )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:

@@ -402,8 +402,8 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
-                                    # Anchor scroll once when message is created
-                                    # anchor() keeps scroll locked to bottom as content grows
+                                    # Scroll to bottom when new message is created
+                                    # Uses scroll_end() to allow user to scroll up for history
                                     if adapter._scroll_to_bottom:
                                         adapter._scroll_to_bottom()
 

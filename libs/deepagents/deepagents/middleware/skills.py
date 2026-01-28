@@ -90,8 +90,14 @@ middleware = SkillsMiddleware(
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
+import shutil
+import tempfile
+import zipfile
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated
 
@@ -281,17 +287,371 @@ def _parse_skill_metadata(
     )
 
 
+def _get_skill_file_mtime(backend: BackendProtocol, skill_path: str) -> str | None:
+    """Get modification time of .skill file.
+
+    Args:
+        backend: Backend instance
+        skill_path: Path to .skill file
+
+    Returns:
+        ISO format timestamp string, or None if not available
+    """
+    try:
+        parent_dir = str(PurePosixPath(skill_path).parent)
+        items = backend.ls_info(parent_dir)
+        for item in items:
+            if item["path"] == skill_path and not item.get("is_dir", False):
+                return item.get("modified_at")
+    except Exception as e:
+        logger.debug("Failed to get modification time for %s: %s", skill_path, e)
+    return None
+
+
+def _is_direct_filesystem_backend(backend: BackendProtocol) -> bool:
+    """Check if backend is a FilesystemBackend that supports direct extraction.
+
+    Args:
+        backend: Backend instance to check
+
+    Returns:
+        True if backend is FilesystemBackend with a cwd attribute
+    """
+    return hasattr(backend, "cwd") and hasattr(backend, "_resolve_path")
+
+
+def _get_filesystem_backend_for_path(backend: BackendProtocol, path: str) -> BackendProtocol | None:
+    """Get the FilesystemBackend for a given path, handling CompositeBackend.
+
+    For CompositeBackend, this resolves the route to get the actual backend.
+    For FilesystemBackend, returns the backend directly.
+
+    Args:
+        backend: Backend instance (FilesystemBackend or CompositeBackend)
+        path: Path to resolve the backend for
+
+    Returns:
+        FilesystemBackend instance if available, None otherwise
+    """
+    # Direct FilesystemBackend
+    if _is_direct_filesystem_backend(backend):
+        return backend
+
+    # CompositeBackend - get the routed backend for this path
+    if hasattr(backend, "_get_backend_and_key"):
+        route_backend, _ = backend._get_backend_and_key(path)
+        if _is_direct_filesystem_backend(route_backend):
+            return route_backend
+
+    return None
+
+
+def _extract_skill_to_filesystem(
+    zip_content: bytes, skill_path: str, fs_backend: BackendProtocol, target_base_path: str
+) -> tuple[str, str] | None:
+    """Extract .skill file directly to filesystem (for FilesystemBackend).
+
+    This is an optimized extraction that writes directly to the filesystem
+    without creating temporary files, reducing I/O operations.
+
+    Args:
+        zip_content: Binary content of the .skill ZIP file
+        skill_path: Path to the .skill file (for error messages)
+        fs_backend: FilesystemBackend instance (must have cwd and _resolve_path)
+        target_base_path: Base path where skill files should be extracted
+
+    Returns:
+        Tuple of (skill_md_content, directory_name) if successful, None otherwise
+    """
+    import io
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_content), "r") as zip_ref:
+            # Find the root directory in the ZIP
+            root_dirs = {name.split("/")[0] for name in zip_ref.namelist() if "/" in name}
+            if not root_dirs:
+                logger.warning("No root directory found in %s", skill_path)
+                return None
+
+            # Use the first root directory (typically there's only one)
+            root_dir = list(root_dirs)[0]
+            directory_name = root_dir.rstrip("/")
+            skill_md_path_in_zip = f"{root_dir}/SKILL.md"
+
+            # Check if SKILL.md exists in the ZIP
+            if skill_md_path_in_zip not in zip_ref.namelist():
+                logger.warning("SKILL.md not found in %s", skill_path)
+                return None
+
+            # Resolve physical target path
+            # For target_base_path like "/skills/user/", we need to resolve "/" + directory_name
+            target_virtual_path = "/" + directory_name
+            target_physical_path = fs_backend._resolve_path(target_virtual_path)
+
+            # Get source .skill file modification time
+            # skill_path is like "/skills/user/novel-generator.skill", resolve to "/" + filename
+            skill_filename = PurePosixPath(skill_path).name
+            skill_virtual_path = "/" + skill_filename
+            skill_physical_path = fs_backend._resolve_path(skill_virtual_path)
+            skill_mtime = skill_physical_path.stat().st_mtime if skill_physical_path.exists() else 0
+
+            # Check if already extracted and up-to-date
+            skill_md_physical_path = target_physical_path / "SKILL.md"
+            if skill_md_physical_path.exists():
+                # Compare modification times
+                extracted_mtime = skill_md_physical_path.stat().st_mtime
+                if extracted_mtime >= skill_mtime:
+                    # Already extracted and up-to-date, read SKILL.md content
+                    skill_md_content = skill_md_physical_path.read_text(encoding="utf-8")
+                    logger.debug(
+                        "Using cached extracted skill from %s (up-to-date)",
+                        target_physical_path,
+                    )
+                    return (skill_md_content, directory_name)
+
+            # Need to extract
+            logger.debug("Extracting .skill file %s to %s", skill_path, target_physical_path)
+
+            # Create target directory if not exists
+            target_physical_path.mkdir(parents=True, exist_ok=True)
+
+            # Extract all files directly to target directory
+            for zip_info in zip_ref.infolist():
+                # Skip directories
+                if zip_info.is_dir():
+                    continue
+
+                # Get relative path from root_dir
+                if not zip_info.filename.startswith(root_dir + "/"):
+                    continue
+
+                rel_path = zip_info.filename[len(root_dir) + 1:]
+                if not rel_path:
+                    continue
+
+                # Calculate target file path
+                target_file_path = target_physical_path / rel_path
+
+                # Create parent directories
+                target_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Extract file content and write
+                content = zip_ref.read(zip_info.filename)
+                target_file_path.write_bytes(content)
+
+            # Read SKILL.md content
+            skill_md_content = skill_md_physical_path.read_text(encoding="utf-8")
+
+            logger.debug(
+                "Extracted .skill file %s to %s",
+                skill_path,
+                target_physical_path,
+            )
+
+            return (skill_md_content, directory_name)
+
+    except zipfile.BadZipFile:
+        logger.warning("Invalid ZIP file: %s", skill_path)
+        return None
+    except Exception as e:
+        logger.warning("Error extracting .skill file %s: %s", skill_path, e)
+        return None
+
+
+def _extract_skill_from_zip(
+    zip_content: bytes, skill_path: str, backend: BackendProtocol, target_base_path: str
+) -> tuple[str, str] | None:
+    """Extract SKILL.md and all resource files from a Coze .skill ZIP file.
+
+    Coze .skill files are ZIP archives containing a directory with SKILL.md and
+    supporting files (references/, assets/, scripts/, etc.). This function:
+    1. For FilesystemBackend (or CompositeBackend with FilesystemBackend route):
+       Extracts directly to filesystem (optimized, no temp files)
+    2. For other backends: Uses temporary files and uploads via backend
+
+    Args:
+        zip_content: Binary content of the .skill ZIP file
+        skill_path: Path to the .skill file (for error messages)
+        backend: Backend instance to upload extracted files to
+        target_base_path: Base path in backend where skill files should be extracted
+
+    Returns:
+        Tuple of (skill_md_content, directory_name) if successful, None otherwise
+    """
+    # Try to get FilesystemBackend for this path (handles CompositeBackend)
+    fs_backend = _get_filesystem_backend_for_path(backend, skill_path)
+    if fs_backend is not None:
+        # Use optimized direct extraction to filesystem
+        return _extract_skill_to_filesystem(zip_content, skill_path, fs_backend, target_base_path)
+
+    # For other backends, use the original upload-based approach
+    try:
+        # Get .skill file modification time for cache checking
+        skill_file_modified_at = _get_skill_file_mtime(backend, skill_path)
+
+        # Write ZIP to temporary file to inspect its contents
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".skill") as tmp_file:
+            tmp_file.write(zip_content)
+            tmp_file_path = tmp_file.name
+
+        try:
+            with zipfile.ZipFile(tmp_file_path, "r") as zip_ref:
+                # Find the root directory in the ZIP
+                root_dirs = {name.split("/")[0] for name in zip_ref.namelist() if "/" in name}
+                if not root_dirs:
+                    logger.warning("No root directory found in %s", skill_path)
+                    return None
+
+                # Use the first root directory (typically there's only one)
+                root_dir = list(root_dirs)[0]
+                directory_name = root_dir.rstrip("/")
+                skill_md_path_in_zip = f"{root_dir}/SKILL.md"
+
+                # Check if SKILL.md exists in the ZIP
+                if skill_md_path_in_zip not in zip_ref.namelist():
+                    logger.warning("SKILL.md not found in %s", skill_path)
+                    return None
+
+                # Calculate target paths
+                skill_target_path = str(PurePosixPath(target_base_path) / directory_name)
+                marker_file_path = str(PurePosixPath(skill_target_path) / ".skill_extracted")
+                skill_md_target_path = str(PurePosixPath(skill_target_path) / "SKILL.md")
+
+                # Check if already extracted and up-to-date
+                if skill_file_modified_at:
+                    try:
+                        marker_responses = backend.download_files([marker_file_path])
+                        if marker_responses and marker_responses[0].content and not marker_responses[0].error:
+                            # Parse marker file
+                            marker_data = json.loads(marker_responses[0].content.decode("utf-8"))
+                            marker_source_mtime = marker_data.get("source_modified_at", "")
+
+                            # Compare timestamps
+                            if marker_source_mtime == skill_file_modified_at:
+                                # File unchanged, try to read cached SKILL.md
+                                skill_md_responses = backend.download_files([skill_md_target_path])
+                                if (
+                                    skill_md_responses
+                                    and skill_md_responses[0].content
+                                    and not skill_md_responses[0].error
+                                ):
+                                    skill_md_content = skill_md_responses[0].content.decode("utf-8")
+                                    logger.debug(
+                                        "Using cached extracted skill from %s (source unchanged since %s)",
+                                        skill_target_path,
+                                        skill_file_modified_at,
+                                    )
+                                    return (skill_md_content, directory_name)
+                    except (json.JSONDecodeError, KeyError, Exception) as e:
+                        logger.debug("Failed to check extraction cache, will re-extract: %s", e)
+
+                # Need to extract (file not cached or source updated)
+                logger.debug("Extracting .skill file %s to %s", skill_path, skill_target_path)
+
+                # Extract and read SKILL.md
+                skill_md_content = zip_ref.read(skill_md_path_in_zip).decode("utf-8")
+
+                # Use tempfile.mkdtemp to create a temporary directory for extraction
+                extract_dir = tempfile.mkdtemp(prefix="skill_extract_")
+                try:
+                    # Extract all files from ZIP to temporary directory
+                    zip_ref.extractall(extract_dir)
+
+                    # Upload all extracted files to backend
+                    files_to_upload: list[tuple[str, bytes]] = []
+
+                    extracted_skill_dir = os.path.join(extract_dir, root_dir)
+                    for root, dirs, files in os.walk(extracted_skill_dir):
+                        for file in files:
+                            local_file_path = os.path.join(root, file)
+                            # Calculate relative path from root_dir
+                            rel_path = os.path.relpath(local_file_path, extracted_skill_dir)
+                            # Convert to POSIX path format
+                            rel_path_posix = rel_path.replace(os.sep, "/")
+                            # Construct target path in backend
+                            target_path = str(PurePosixPath(skill_target_path) / rel_path_posix)
+
+                            # Read file content
+                            with open(local_file_path, "rb") as f:
+                                file_content = f.read()
+
+                            files_to_upload.append((target_path, file_content))
+
+                    # Upload all files to backend
+                    if files_to_upload:
+                        upload_responses = backend.upload_files(files_to_upload)
+                        # Check for upload errors
+                        for (path, _), response in zip(files_to_upload, upload_responses, strict=True):
+                            if response.error:
+                                logger.warning(
+                                    "Failed to upload resource file %s from %s: %s",
+                                    path,
+                                    skill_path,
+                                    response.error,
+                                )
+
+                    # Create/update extraction marker file
+                    if skill_file_modified_at:
+                        marker_data = {
+                            "source_file": skill_path,
+                            "source_modified_at": skill_file_modified_at,
+                            "extracted_at": datetime.now(UTC).isoformat(),
+                        }
+                        marker_content = json.dumps(marker_data, indent=2).encode("utf-8")
+                        marker_responses = backend.upload_files([(marker_file_path, marker_content)])
+                        if marker_responses and marker_responses[0].error:
+                            logger.warning(
+                                "Failed to create extraction marker file %s: %s",
+                                marker_file_path,
+                                marker_responses[0].error,
+                            )
+
+                    logger.debug(
+                        "Extracted %d files from %s to %s",
+                        len(files_to_upload),
+                        skill_path,
+                        skill_target_path,
+                    )
+
+                    return (skill_md_content, directory_name)
+                finally:
+                    # Clean up temporary extraction directory
+                    try:
+                        shutil.rmtree(extract_dir)
+                        logger.debug("Cleaned up temporary extraction directory: %s", extract_dir)
+                    except OSError as e:
+                        logger.warning("Failed to clean up temporary directory %s: %s", extract_dir, e)
+        finally:
+            # Clean up temporary ZIP file
+            try:
+                os.unlink(tmp_file_path)
+            except OSError:
+                pass
+
+    except zipfile.BadZipFile:
+        logger.warning("Invalid ZIP file: %s", skill_path)
+        return None
+    except Exception as e:
+        logger.warning("Error extracting .skill file %s: %s", skill_path, e)
+        return None
+
+
 def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source.
 
-    Scans backend for subdirectories containing SKILL.md files, downloads their content,
-    parses YAML frontmatter, and returns skill metadata.
+    Scans backend for subdirectories containing SKILL.md files and .skill files
+    (Coze format ZIP archives), downloads their content, parses YAML frontmatter,
+    and returns skill metadata.
+
+    For .skill files, checks if an extracted directory already exists. If it does
+    and contains SKILL.md, uses the directory instead of re-extracting the .skill file.
 
     Expected structure:
         source_path/
         ├── skill-name/
         │   ├── SKILL.md        # Required
         │   └── helper.py       # Optional
+        └── skill-name.skill    # Coze format (ZIP archive containing SKILL.md)
 
     Args:
         backend: Backend instance to use for file operations
@@ -304,54 +664,116 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
 
     skills: list[SkillMetadata] = []
     items = backend.ls_info(base_path)
-    # Find all skill directories (directories containing SKILL.md)
+    # Find all skill directories (directories containing SKILL.md) and .skill files
     skill_dirs = []
+    skill_files = []
+    skill_dir_names = set()  # Track directory names to avoid duplicates
+
     for item in items:
-        if not item.get("is_dir"):
-            continue
-        skill_dirs.append(item["path"])
+        if item.get("is_dir"):
+            skill_dirs.append(item["path"])
+            # Extract directory name for deduplication
+            dir_name = PurePosixPath(item["path"]).name
+            skill_dir_names.add(dir_name)
+        elif item["path"].endswith(".skill"):
+            # Coze .skill files are ZIP archives
+            skill_files.append(item["path"])
 
-    if not skill_dirs:
-        return []
+    # Filter out .skill files that already have extracted directories
+    # e.g., if novel-generator/ exists, skip novel-generator.skill
+    skill_files_to_process = []
+    for skill_file_path in skill_files:
+        # Get the expected directory name (e.g., "novel-generator.skill" -> "novel-generator")
+        skill_file_name = PurePosixPath(skill_file_path).name
+        expected_dir_name = skill_file_name.rsplit(".", 1)[0]  # Remove .skill extension
 
-    # For each skill directory, check if SKILL.md exists and download it
-    skill_md_paths = []
-    for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
-        skill_md_path = str(skill_dir / "SKILL.md")
-        skill_md_paths.append((skill_dir_path, skill_md_path))
+        if expected_dir_name not in skill_dir_names:
+            skill_files_to_process.append(skill_file_path)
+        else:
+            logger.debug(
+                "Skipping .skill file %s, using existing directory %s/",
+                skill_file_path,
+                expected_dir_name,
+            )
 
-    paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
-    responses = backend.download_files(paths_to_download)
+    skill_files = skill_files_to_process
 
-    # Parse each downloaded SKILL.md
-    for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        if response.error:
-            # Skill doesn't have a SKILL.md, skip it
-            continue
+    # Process regular skill directories
+    if skill_dirs:
+        # For each skill directory, check if SKILL.md exists and download it
+        skill_md_paths = []
+        for skill_dir_path in skill_dirs:
+            # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
+            skill_dir = PurePosixPath(skill_dir_path)
+            skill_md_path = str(skill_dir / "SKILL.md")
+            skill_md_paths.append((skill_dir_path, skill_md_path))
 
-        if response.content is None:
-            logger.warning("Downloaded skill file %s has no content", skill_md_path)
-            continue
+        paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
+        responses = backend.download_files(paths_to_download)
 
-        try:
-            content = response.content.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.warning("Error decoding %s: %s", skill_md_path, e)
-            continue
+        # Parse each downloaded SKILL.md
+        for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
+            if response.error:
+                # Skill doesn't have a SKILL.md, skip it
+                continue
 
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
+            if response.content is None:
+                logger.warning("Downloaded skill file %s has no content", skill_md_path)
+                continue
 
-        # Parse metadata
-        skill_metadata = _parse_skill_metadata(
-            content=content,
-            skill_path=skill_md_path,
-            directory_name=directory_name,
-        )
-        if skill_metadata:
-            skills.append(skill_metadata)
+            try:
+                content = response.content.decode("utf-8")
+            except UnicodeDecodeError as e:
+                logger.warning("Error decoding %s: %s", skill_md_path, e)
+                continue
+
+            # Extract directory name from path using PurePosixPath
+            directory_name = PurePosixPath(skill_dir_path).name
+
+            # Parse metadata
+            skill_metadata = _parse_skill_metadata(
+                content=content,
+                skill_path=skill_md_path,
+                directory_name=directory_name,
+            )
+            if skill_metadata:
+                skills.append(skill_metadata)
+
+    # Process Coze .skill files (ZIP archives)
+    if skill_files:
+        skill_file_responses = backend.download_files(skill_files)
+        for skill_file_path, response in zip(skill_files, skill_file_responses, strict=True):
+            if response.error:
+                logger.warning("Failed to download .skill file %s: %s", skill_file_path, response.error)
+                continue
+
+            if response.content is None:
+                logger.warning("Downloaded .skill file %s has no content", skill_file_path)
+                continue
+
+            # Extract SKILL.md and all resource files from ZIP
+            # Upload extracted files to the same location as the .skill file's parent directory
+            skill_file_parent = str(PurePosixPath(skill_file_path).parent)
+            result = _extract_skill_from_zip(
+                response.content, skill_file_path, backend, skill_file_parent
+            )
+            if result is None:
+                continue
+
+            content, directory_name = result
+
+            # Parse metadata
+            # Use the .skill file path as skill_path, but construct a virtual SKILL.md path
+            skill_dir = PurePosixPath(skill_file_path).parent / directory_name
+            skill_md_path = str(skill_dir / "SKILL.md")
+
+            skill_metadata = _parse_skill_metadata(
+                content=content,
+                skill_path=skill_md_path,
+                directory_name=directory_name,
+            )
+            if skill_metadata:
+                skills.append(skill_metadata)
 
     return skills
 
@@ -359,14 +781,19 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
 async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source (async version).
 
-    Scans backend for subdirectories containing SKILL.md files, downloads their content,
-    parses YAML frontmatter, and returns skill metadata.
+    Scans backend for subdirectories containing SKILL.md files and .skill files
+    (Coze format ZIP archives), downloads their content, parses YAML frontmatter,
+    and returns skill metadata.
+
+    For .skill files, checks if an extracted directory already exists. If it does
+    and contains SKILL.md, uses the directory instead of re-extracting the .skill file.
 
     Expected structure:
         source_path/
         ├── skill-name/
         │   ├── SKILL.md        # Required
         │   └── helper.py       # Optional
+        └── skill-name.skill    # Coze format (ZIP archive containing SKILL.md)
 
     Args:
         backend: Backend instance to use for file operations
@@ -379,54 +806,116 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
 
     skills: list[SkillMetadata] = []
     items = await backend.als_info(base_path)
-    # Find all skill directories (directories containing SKILL.md)
+    # Find all skill directories (directories containing SKILL.md) and .skill files
     skill_dirs = []
+    skill_files = []
+    skill_dir_names = set()  # Track directory names to avoid duplicates
+
     for item in items:
-        if not item.get("is_dir"):
-            continue
-        skill_dirs.append(item["path"])
+        if item.get("is_dir"):
+            skill_dirs.append(item["path"])
+            # Extract directory name for deduplication
+            dir_name = PurePosixPath(item["path"]).name
+            skill_dir_names.add(dir_name)
+        elif item["path"].endswith(".skill"):
+            # Coze .skill files are ZIP archives
+            skill_files.append(item["path"])
 
-    if not skill_dirs:
-        return []
+    # Filter out .skill files that already have extracted directories
+    # e.g., if novel-generator/ exists, skip novel-generator.skill
+    skill_files_to_process = []
+    for skill_file_path in skill_files:
+        # Get the expected directory name (e.g., "novel-generator.skill" -> "novel-generator")
+        skill_file_name = PurePosixPath(skill_file_path).name
+        expected_dir_name = skill_file_name.rsplit(".", 1)[0]  # Remove .skill extension
 
-    # For each skill directory, check if SKILL.md exists and download it
-    skill_md_paths = []
-    for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
-        skill_md_path = str(skill_dir / "SKILL.md")
-        skill_md_paths.append((skill_dir_path, skill_md_path))
+        if expected_dir_name not in skill_dir_names:
+            skill_files_to_process.append(skill_file_path)
+        else:
+            logger.debug(
+                "Skipping .skill file %s, using existing directory %s/",
+                skill_file_path,
+                expected_dir_name,
+            )
 
-    paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
-    responses = await backend.adownload_files(paths_to_download)
+    skill_files = skill_files_to_process
 
-    # Parse each downloaded SKILL.md
-    for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        if response.error:
-            # Skill doesn't have a SKILL.md, skip it
-            continue
+    # Process regular skill directories
+    if skill_dirs:
+        # For each skill directory, check if SKILL.md exists and download it
+        skill_md_paths = []
+        for skill_dir_path in skill_dirs:
+            # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
+            skill_dir = PurePosixPath(skill_dir_path)
+            skill_md_path = str(skill_dir / "SKILL.md")
+            skill_md_paths.append((skill_dir_path, skill_md_path))
 
-        if response.content is None:
-            logger.warning("Downloaded skill file %s has no content", skill_md_path)
-            continue
+        paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
+        responses = await backend.adownload_files(paths_to_download)
 
-        try:
-            content = response.content.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.warning("Error decoding %s: %s", skill_md_path, e)
-            continue
+        # Parse each downloaded SKILL.md
+        for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
+            if response.error:
+                # Skill doesn't have a SKILL.md, skip it
+                continue
 
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
+            if response.content is None:
+                logger.warning("Downloaded skill file %s has no content", skill_md_path)
+                continue
 
-        # Parse metadata
-        skill_metadata = _parse_skill_metadata(
-            content=content,
-            skill_path=skill_md_path,
-            directory_name=directory_name,
-        )
-        if skill_metadata:
-            skills.append(skill_metadata)
+            try:
+                content = response.content.decode("utf-8")
+            except UnicodeDecodeError as e:
+                logger.warning("Error decoding %s: %s", skill_md_path, e)
+                continue
+
+            # Extract directory name from path using PurePosixPath
+            directory_name = PurePosixPath(skill_dir_path).name
+
+            # Parse metadata
+            skill_metadata = _parse_skill_metadata(
+                content=content,
+                skill_path=skill_md_path,
+                directory_name=directory_name,
+            )
+            if skill_metadata:
+                skills.append(skill_metadata)
+
+    # Process Coze .skill files (ZIP archives)
+    if skill_files:
+        skill_file_responses = await backend.adownload_files(skill_files)
+        for skill_file_path, response in zip(skill_files, skill_file_responses, strict=True):
+            if response.error:
+                logger.warning("Failed to download .skill file %s: %s", skill_file_path, response.error)
+                continue
+
+            if response.content is None:
+                logger.warning("Downloaded .skill file %s has no content", skill_file_path)
+                continue
+
+            # Extract SKILL.md and all resource files from ZIP
+            # Upload extracted files to the same location as the .skill file's parent directory
+            skill_file_parent = str(PurePosixPath(skill_file_path).parent)
+            result = _extract_skill_from_zip(
+                response.content, skill_file_path, backend, skill_file_parent
+            )
+            if result is None:
+                continue
+
+            content, directory_name = result
+
+            # Parse metadata
+            # Use the .skill file path as skill_path, but construct a virtual SKILL.md path
+            skill_dir = PurePosixPath(skill_file_path).parent / directory_name
+            skill_md_path = str(skill_dir / "SKILL.md")
+
+            skill_metadata = _parse_skill_metadata(
+                content=content,
+                skill_path=skill_md_path,
+                directory_name=directory_name,
+            )
+            if skill_metadata:
+                skills.append(skill_metadata)
 
     return skills
 
