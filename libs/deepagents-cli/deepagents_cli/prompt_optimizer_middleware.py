@@ -38,17 +38,20 @@ class PromptOptimizerMiddleware(AgentMiddleware):
     3. Ensures the optimized prompt is used for subsequent operations (like write_todos)
     """
 
-    def __init__(self, auto_optimize: bool = True, skill_name: str = "prompt-optimizer"):
+    def __init__(self, auto_optimize: bool = True, skill_name: str = "prompt-optimizer", always_optimize: bool = False):
         """Initialize the PromptOptimizerMiddleware.
 
         Args:
             auto_optimize: If True, automatically optimize prompts containing trigger keywords.
                           If False, only optimize when explicitly requested.
             skill_name: Name of the prompt-optimizer skill to use.
+            always_optimize: If True, always optimize every user input (ignores trigger keywords).
+                          If False, uses trigger keywords or explicit requests.
         """
         super().__init__()
         self.auto_optimize = auto_optimize
         self.skill_name = skill_name
+        self.always_optimize = always_optimize
 
     def _should_optimize(self, user_message: str) -> bool:
         """Determine if the user message should be optimized.
@@ -61,6 +64,10 @@ class PromptOptimizerMiddleware(AgentMiddleware):
         """
         if not user_message:
             return False
+
+        # 如果启用了 always_optimize，总是优化（除非消息为空）
+        if self.always_optimize:
+            return True
 
         # 如果用户明确要求优化，总是优化
         if any(keyword in user_message.lower() for keyword in ["优化", "改进", "optimize", "improve"]):

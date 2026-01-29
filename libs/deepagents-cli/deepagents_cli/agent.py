@@ -394,7 +394,8 @@ def create_cli_agent(
 
     # Add prompt optimizer middleware (should run early to optimize prompts before processing)
     # This ensures prompts are optimized before write_todos or other operations
-    agent_middleware.append(PromptOptimizerMiddleware(auto_optimize=True))
+    # always_optimize=True: 每次输入都先调用 prompt-optimizer 技能优化提示词
+    agent_middleware.append(PromptOptimizerMiddleware(auto_optimize=True, always_optimize=True))
 
     # Add memory middleware
     if enable_memory:
