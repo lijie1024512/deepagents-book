@@ -140,8 +140,8 @@ def print_system(message: str) -> None:
     console.print(f"[yellow]{message}[/yellow]")
 
 
-def prompt_approval(action_request: ActionRequest, auto_approve: bool) -> dict[str, str]:
-    """Prompt user for tool approval.
+async def prompt_approval(action_request: ActionRequest, auto_approve: bool) -> dict[str, str]:
+    """Prompt user for tool approval (async version).
     
     Returns:
         Decision dict: {"type": "approve"}, {"type": "reject"}, or {"type": "auto_approve_all"}
@@ -165,9 +165,19 @@ def prompt_approval(action_request: ActionRequest, auto_approve: bool) -> dict[s
     console.print("  [cyan]a[/cyan] - Auto-approve all this session")
     console.print()
     
+    # Create a temporary prompt session for approval input
+    # This avoids conflicts with the main prompt session
+    approval_session = PromptSession(
+        style=PROMPT_STYLE,
+    )
+    
     while True:
         try:
-            choice = input("Your choice [y/n/a]: ").strip().lower()
+            choice = await approval_session.prompt_async(
+                [("class:prompt", "Your choice [y/n/a]: ")],
+                multiline=False,
+            )
+            choice = choice.strip().lower()
             if choice in ("y", "yes", "1"):
                 return {"type": "approve"}
             elif choice in ("n", "no", "2"):
@@ -584,7 +594,7 @@ async def _execute_task_rich(
                             decisions = []
                             
                             for action_request in hitl_request["action_requests"]:
-                                decision = prompt_approval(action_request, auto_approve_ref[0])
+                                decision = await prompt_approval(action_request, auto_approve_ref[0])
                                 
                                 if decision.get("type") == "auto_approve_all":
                                     auto_approve_ref[0] = True

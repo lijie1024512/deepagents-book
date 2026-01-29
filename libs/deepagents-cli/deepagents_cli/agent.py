@@ -24,6 +24,8 @@ from langgraph.runtime import Runtime
 from deepagents_cli.config import COLORS, config, console, extract_builtin_skills, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
+from deepagents_cli.novel_prompt import NovelPromptMiddleware
+from deepagents_cli.prompt_optimizer_middleware import PromptOptimizerMiddleware
 from deepagents_cli.shell import ShellMiddleware
 
 
@@ -130,12 +132,14 @@ The filesystem backend is currently operating in: `{cwd}`
 ### File System and Paths
 
 **IMPORTANT - Path Handling:**
-- All file paths must be **virtual paths** starting with `/` (e.g., `/file.txt`, `/research_project/file.md`)
+- You can use **Windows absolute paths directly** (e.g., `E:\\git\\deepagents-book\\novels\\file.md` or `E:/git/deepagents-book/novels/file.md`)
+- You can also use **virtual paths** starting with `/` (e.g., `/file.txt`, `/research_project/file.md`)
 - Virtual paths are relative to the current working directory: `{cwd}`
 - Example: To access `{cwd}/research_project/file.md`, use the virtual path `/research_project/file.md`
 - Example: To access `{cwd}/file.txt`, use the virtual path `/file.txt`
-- **Never use Windows absolute paths** (e.g., `C:\\...` or `E:\\...`) - always use virtual paths starting with `/`
-- **Never use relative paths** without leading `/` - always start paths with `/`
+- **For files outside current working directory**: Use Windows absolute paths directly (e.g., `E:\\git\\deepagents-book\\novels\\file.md`)
+- **Path format**: You can use either backslashes (`\\`) or forward slashes (`/`) in Windows paths - both work
+- **Never use relative paths** without leading `/` - always start virtual paths with `/` or use absolute paths
 
 """
 
@@ -388,6 +392,10 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware = []
 
+    # Add prompt optimizer middleware (should run early to optimize prompts before processing)
+    # This ensures prompts are optimized before write_todos or other operations
+    agent_middleware.append(PromptOptimizerMiddleware(auto_optimize=True))
+
     # Add memory middleware
     if enable_memory:
         # Create factory function for memory backend with Windows path support
@@ -437,50 +445,20 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        # Create factory function for skills backend with Windows path support
-        def create_skills_backend(runtime):
-            routes = {}
-            
-            # 内置 skills 目录（优先级最低，可被用户和项目覆盖）
-            if builtin_skills_dir and builtin_skills_dir.exists():
-                builtin_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
-                routes["/skills/builtin/"] = builtin_backend
-            
-            # 用户 skills 目录
-            if skills_dir:
-                user_backend = FilesystemBackend(root_dir=str(skills_dir), virtual_mode=True)
-                routes["/skills/user/"] = user_backend
-            
-            # 项目 skills 目录（优先级最高）
-            if project_skills_dir:
-                project_backend = FilesystemBackend(root_dir=str(project_skills_dir), virtual_mode=True)
-                routes["/skills/project/"] = project_backend
-            
-            # 创建 CompositeBackend
-            if routes:
+        # 统一使用内置技能目录，所有技能都在 libs/deepagents-cli/deepagents_cli/skills 管理
+        if builtin_skills_dir and builtin_skills_dir.exists():
+            def create_skills_backend(runtime):
+                # 创建指向技能目录的 backend
+                skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
                 return CompositeBackend(
                     default=StateBackend(runtime),
-                    routes=routes
+                    routes={"/skills/": skills_backend}
                 )
-            else:
-                # 如果没有 routes，使用 StateBackend
-                return StateBackend(runtime)
-        
-        # 获取 skills sources（虚拟路径）
-        # 顺序：内置 -> 用户 -> 项目（后面的可以覆盖前面的）
-        skills_sources = []
-        if builtin_skills_dir and builtin_skills_dir.exists():
-            skills_sources.append("/skills/builtin/")
-        if skills_dir:
-            skills_sources.append("/skills/user/")
-        if project_skills_dir:
-            skills_sources.append("/skills/project/")
-        
-        if skills_sources:
+            
             agent_middleware.append(
                 SkillsMiddleware(
                     backend=create_skills_backend,
-                    sources=skills_sources,
+                    sources=["/skills/"],
                 )
             )
 
@@ -491,6 +469,9 @@ def create_cli_agent(
 
         # Local context middleware (git info, directory tree, etc.)
         agent_middleware.append(LocalContextMiddleware())
+        
+        # Novel prompt middleware (detects novel-related content and injects prompt)
+        agent_middleware.append(NovelPromptMiddleware())
 
         # Add shell middleware (only in local mode)
         if enable_shell:
@@ -511,6 +492,9 @@ def create_cli_agent(
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+        
+        # Novel prompt middleware (also available in sandbox mode)
+        agent_middleware.append(NovelPromptMiddleware())
 
     # Get or use custom system prompt
     if system_prompt is None:
@@ -524,10 +508,27 @@ def create_cli_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()
 
-    composite_backend = CompositeBackend(
-        default=backend,
-        routes={},
-    )
+    # Add skills route to main backend so file tools can access skill files
+    # Note: CompositeBackend routes need backend instances, not factory functions
+    # We'll create a factory function for the composite backend itself
+    def create_composite_backend_with_skills(runtime):
+        """Factory function to create CompositeBackend with skills route."""
+        routes = {}
+        if enable_skills and builtin_skills_dir and builtin_skills_dir.exists():
+            # 统一使用 /skills/ 路径，指向 libs/deepagents-cli/deepagents_cli/skills
+            skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
+            routes["/skills/"] = skills_backend
+        
+        # Resolve default backend (could be a factory function)
+        if callable(backend):
+            default_backend = backend(runtime)
+        else:
+            default_backend = backend
+        
+        return CompositeBackend(default=default_backend, routes=routes)
+    
+    # Use factory function for composite backend
+    composite_backend = create_composite_backend_with_skills
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver

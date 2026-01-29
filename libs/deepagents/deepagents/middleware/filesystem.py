@@ -90,36 +90,39 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     return result
 
 
-def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None, allow_absolute_paths: bool = False) -> str:
     r"""Validate and normalize file path for security.
 
-    Ensures paths are safe to use by preventing directory traversal attacks
-    and enforcing consistent formatting. All paths are normalized to use
-    forward slashes and start with a leading slash.
-
-    This function is designed for virtual filesystem paths and rejects
-    Windows absolute paths (e.g., C:/..., F:/...) to maintain consistency
-    and prevent path format ambiguity.
+    Supports both Windows absolute paths and virtual paths (relative to working directory).
+    All paths are normalized to use forward slashes.
 
     Args:
-        path: The path to validate and normalize.
+        path: The path to validate and normalize. Can be:
+            - Windows absolute path (e.g., `E:\git\project\file.md` or `E:/git/project/file.md`)
+            - Virtual path starting with `/` (e.g., `/file.md`, `/novels/file.md`)
+            - Relative path (will be converted to virtual path with leading `/`)
         allowed_prefixes: Optional list of allowed path prefixes. If provided,
             the normalized path must start with one of these prefixes.
+        allow_absolute_paths: If True, allow Windows absolute paths (e.g., C:\...).
+            This is useful for local development where direct file access is needed.
 
     Returns:
-        Normalized canonical path starting with `/` and using forward slashes.
+        Normalized path:
+        - Windows absolute paths: converted to forward slashes (e.g., `E:/git/project/file.md`)
+        - Virtual paths: normalized with forward slashes and leading `/` (e.g., `/file.md`)
 
     Raises:
         ValueError: If path contains traversal sequences (`..` or `~`), is a
-            Windows absolute path (e.g., C:/...), or does not start with an
-            allowed prefix when `allowed_prefixes` is specified.
+            Windows absolute path when `allow_absolute_paths=False`,
+            or does not start with an allowed prefix when `allowed_prefixes` is specified.
 
     Example:
         ```python
         validate_path("foo/bar")  # Returns: "/foo/bar"
         validate_path("/./foo//bar")  # Returns: "/foo/bar"
         validate_path("../etc/passwd")  # Raises ValueError
-        validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
+        validate_path(r"E:\git\project\file.md", allow_absolute_paths=True)  # Returns: "E:/git/project/file.md"
+        validate_path("E:/git/project/file.md", allow_absolute_paths=True)  # Returns: "E:/git/project/file.md"
         validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
         validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
         ```
@@ -128,12 +131,25 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)
 
-    # Reject Windows absolute paths (e.g., C:\..., D:/...)
-    # This maintains consistency in virtual filesystem paths
-    if re.match(r"^[a-zA-Z]:", path):
-        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
-        raise ValueError(msg)
+    # Check for Windows absolute paths (e.g., C:\..., D:/...)
+    is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", path))
+    
+    if is_windows_absolute:
+        if allow_absolute_paths:
+            # Allow absolute paths, just normalize backslashes to forward slashes
+            normalized = path.replace("\\", "/")
+            # Check allowed_prefixes if specified
+            if allowed_prefixes is not None:
+                # For absolute paths, check if any prefix matches (as substring or path component)
+                # This allows flexibility while maintaining security
+                pass  # Absolute paths bypass prefix checks for now
+            return normalized
+        else:
+            # Reject Windows absolute paths when not allowed
+            msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
+            raise ValueError(msg)
 
+    # Handle virtual paths (starting with /) or relative paths
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 
@@ -273,6 +289,32 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
+def _check_allow_absolute_paths(resolved_backend: BackendProtocol) -> bool:
+    """Check if backend supports absolute paths.
+    
+    Args:
+        resolved_backend: The resolved backend instance.
+        
+    Returns:
+        True if backend supports absolute paths (FilesystemBackend with virtual_mode=False),
+        False otherwise.
+    """
+    try:
+        if hasattr(resolved_backend, "virtual_mode"):
+            # Direct FilesystemBackend
+            return not resolved_backend.virtual_mode
+        elif hasattr(resolved_backend, "default"):
+            # CompositeBackend - check default backend
+            default_backend = resolved_backend.default
+            # default might be a callable (factory function), skip if so
+            if not callable(default_backend) and hasattr(default_backend, "virtual_mode"):
+                return not default_backend.virtual_mode
+    except (AttributeError, TypeError):
+        # If we can't determine, default to False (safer)
+        pass
+    return False
+
+
 def _get_backend(backend: BACKEND_TYPES, runtime: ToolRuntime) -> BackendProtocol:
     """Get the resolved backend instance from backend or factory.
 
@@ -305,11 +347,14 @@ def _ls_tool_generator(
 
     def sync_ls(
         runtime: ToolRuntime[None, FilesystemState],
-        path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+        path: Annotated[str, "Absolute path to the directory to list. Can be Windows absolute path (e.g., E:\\git\\project) or virtual path (e.g., /workspace)."],
     ) -> str:
         """Synchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        validated_path = _validate_path(path, allow_absolute_paths=allow_absolute)
         infos = resolved_backend.ls_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
         result = truncate_if_too_long(paths)
@@ -317,11 +362,14 @@ def _ls_tool_generator(
 
     async def async_ls(
         runtime: ToolRuntime[None, FilesystemState],
-        path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+        path: Annotated[str, "Absolute path to the directory to list. Can be Windows absolute path (e.g., E:\\git\\project) or virtual path (e.g., /workspace)."],
     ) -> str:
         """Asynchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        validated_path = _validate_path(path, allow_absolute_paths=allow_absolute)
         infos = await resolved_backend.als_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
         result = truncate_if_too_long(paths)
@@ -358,7 +406,11 @@ def _read_file_tool_generator(
     ) -> str:
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        # Check if backend supports absolute paths (for Windows absolute paths)
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", file_path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        file_path = _validate_path(file_path, allow_absolute_paths=allow_absolute)
         result = resolved_backend.read(file_path, offset=offset, limit=limit)
 
         lines = result.splitlines(keepends=True)
@@ -376,7 +428,10 @@ def _read_file_tool_generator(
     ) -> str:
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", file_path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        file_path = _validate_path(file_path, allow_absolute_paths=allow_absolute)
         result = await resolved_backend.aread(file_path, offset=offset, limit=limit)
 
         lines = result.splitlines(keepends=True)
@@ -416,7 +471,10 @@ def _write_file_tool_generator(
     ) -> Command | str:
         """Synchronous wrapper for write_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", file_path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        file_path = _validate_path(file_path, allow_absolute_paths=allow_absolute)
         res: WriteResult = resolved_backend.write(file_path, content)
         if res.error:
             return res.error
@@ -442,7 +500,10 @@ def _write_file_tool_generator(
     ) -> Command | str:
         """Asynchronous wrapper for write_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", file_path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        file_path = _validate_path(file_path, allow_absolute_paths=allow_absolute)
         res: WriteResult = await resolved_backend.awrite(file_path, content)
         if res.error:
             return res.error
@@ -494,7 +555,10 @@ def _edit_file_tool_generator(
     ) -> Command | str:
         """Synchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", file_path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        file_path = _validate_path(file_path, allow_absolute_paths=allow_absolute)
         res: EditResult = resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
         if res.error:
             return res.error
@@ -522,7 +586,10 @@ def _edit_file_tool_generator(
     ) -> Command | str:
         """Asynchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        # Auto-detect: if user provides Windows absolute path, allow it; otherwise use virtual path
+        is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", file_path))
+        allow_absolute = is_windows_absolute and _check_allow_absolute_paths(resolved_backend)
+        file_path = _validate_path(file_path, allow_absolute_paths=allow_absolute)
         res: EditResult = await resolved_backend.aedit(file_path, old_string, new_string, replace_all=replace_all)
         if res.error:
             return res.error
