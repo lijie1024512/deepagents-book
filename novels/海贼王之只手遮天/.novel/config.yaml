@@ -1,0 +1,14 @@
+author: ''
+created_at: '2026-02-09T18:41:12.231842'
+description: ''
+models:
+  outline: claude-sonnet-4-5-20250929
+  writing: claude-sonnet-4-5-20250929
+settings:
+  auto_summary: true
+  chapter_word_count:
+  - 3000
+  - 8000
+  progressive_mode: true
+title: 海贼王之只手遮天
+world_type: onepiece
