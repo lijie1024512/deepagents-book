@@ -52,13 +52,45 @@
 #   日志存储位置: ~/.deepagents/logs/{thread_id}.md
 #
 #   查看日志命令:
-#   deepagents logs list          # 列出所有日志
-#   deepagents logs view <id>     # 查看指定日志
-#   deepagents logs path          # 显示日志目录路径
+#   xiaolu logs list              # 列出所有日志
+#   xiaolu logs view <id>         # 查看指定日志
+#   xiaolu logs path              # 显示日志目录路径
 #
 #   在TUI界面中:
 #   /logs                         # 查看当前日志信息
 #   /logs <thread_id>             # 查看指定日志内容
+#
+# ============================================================
+# 全局安装 CLI (任意目录直接输入 xiaolu 启动):
+# ============================================================
+#
+#   --- Linux / macOS ---
+#   cd /home/lijie/test/deepagents-book
+#   ./scripts/install-cli.sh                    # 安装为 xiaolu 到 ~/.local/bin/
+#   ./scripts/install-cli.sh /usr/local/bin      # 指定安装目录
+#   ./scripts/install-cli.sh ~/.local/bin myapp  # 自定义命令名
+#
+#   --- Windows (双击或命令行) ---
+#   scripts\install-cli.bat              # 双击运行，安装为 xiaolu
+#   scripts\install-cli.bat myapp        # 自定义命令名
+#
+#   安装后即可在任意目录使用:
+#   xiaolu                    # 启动交互模式
+#   xiaolu -m '你好'           # 单次消息
+#   xiaolu novel init '标题'   # 小说模式
+#
+# ============================================================
+# 会话恢复 (历史记录):
+# ============================================================
+#   每次 xiaolu 启动默认创建新会话 (新 thread ID)。
+#   如需继续之前的对话，使用 -r / --resume 参数:
+#
+#   xiaolu -r                 # 恢复最近一次会话
+#   xiaolu -r <thread_id>     # 恢复指定会话
+#
+#   查看历史会话:
+#   xiaolu logs list          # 列出所有会话日志
+#   xiaolu logs view <id>     # 查看指定会话内容
 #
 # ============================================================
 # 排除内容:
