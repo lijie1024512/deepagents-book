@@ -38,7 +38,7 @@ def list_skills(
 
     Priority order (later overrides earlier):
     1. builtin skills (shipped with deepagents-cli)
-    2. user skills (~/.deepagents/{agent}/skills/)
+    2. user skills ({project_root}/.deepagents/{agent}/skills/)
     3. project skills ({project}/.deepagents/skills/)
 
     Args:

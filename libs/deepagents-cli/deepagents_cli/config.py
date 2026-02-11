@@ -243,15 +243,17 @@ class Settings:
 
     @property
     def user_deepagents_dir(self) -> Path:
-        """Get the base user-level .deepagents directory.
+        """Get the project-level .deepagents directory.
 
         Returns:
-            Path to ~/.deepagents
+            Path to {project_root}/.deepagents (falls back to cwd/.deepagents if no project root)
         """
-        return Path.home() / ".deepagents"
+        if self.project_root:
+            return self.project_root / ".deepagents"
+        return Path.cwd() / ".deepagents"
 
     def get_user_agent_md_path(self, agent_name: str) -> Path:
-        """Get user-level AGENTS.md path for a specific agent.
+        """Get agent AGENTS.md path under project .deepagents directory.
 
         Returns path regardless of whether the file exists.
 
@@ -259,9 +261,9 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/AGENTS.md
+            Path to {project_root}/.deepagents/{agent_name}/AGENTS.md
         """
-        return Path.home() / ".deepagents" / agent_name / "AGENTS.md"
+        return self.user_deepagents_dir / agent_name / "AGENTS.md"
 
     def get_project_agent_md_path(self) -> Path | None:
         """Get project-level AGENTS.md path.
@@ -280,17 +282,17 @@ class Settings:
         """Validate prevent invalid filesystem paths and security issues."""
         if not agent_name or not agent_name.strip():
             return False
-        # Allow only alphanumeric, hyphens, underscores, and whitespace
-        return bool(re.match(r"^[a-zA-Z0-9_\-\s]+$", agent_name))
+        # Allow alphanumeric (including Unicode letters/digits), hyphens, underscores, and whitespace
+        return bool(re.match(r"^[\w\s\-]+$", agent_name, re.UNICODE))
 
     def get_agent_dir(self, agent_name: str) -> Path:
-        """Get the global agent directory path.
+        """Get the agent directory path under project .deepagents.
 
         Args:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}
+            Path to {project_root}/.deepagents/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
@@ -298,16 +300,16 @@ class Settings:
                 "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
-        return Path.home() / ".deepagents" / agent_name
+        return self.user_deepagents_dir / agent_name
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
-        """Ensure the global agent directory exists and return its path.
+        """Ensure the agent directory exists and return its path.
 
         Args:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}
+            Path to {project_root}/.deepagents/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
@@ -333,24 +335,24 @@ class Settings:
         return project_deepagents_dir
 
     def get_user_skills_dir(self, agent_name: str) -> Path:
-        """Get user-level skills directory path for a specific agent.
+        """Get skills directory path for a specific agent.
 
         Args:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/skills/
+            Path to {project_root}/.deepagents/{agent_name}/skills/
         """
         return self.get_agent_dir(agent_name) / "skills"
 
     def ensure_user_skills_dir(self, agent_name: str) -> Path:
-        """Ensure user-level skills directory exists and return its path.
+        """Ensure skills directory exists and return its path.
 
         Args:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/skills/
+            Path to {project_root}/.deepagents/{agent_name}/skills/
         """
         skills_dir = self.get_user_skills_dir(agent_name)
         skills_dir.mkdir(parents=True, exist_ok=True)
@@ -419,7 +421,9 @@ def extract_builtin_skills() -> None:
                 # Find the root directory in the ZIP
                 root_dirs = {name.split("/")[0] for name in zip_ref.namelist() if "/" in name}
                 if not root_dirs:
-                    console.print(f"[yellow]Warning: No root directory in {skill_file.name}[/yellow]")
+                    console.print(
+                        f"[yellow]Warning: No root directory in {skill_file.name}[/yellow]"
+                    )
                     continue
 
                 root_dir = list(root_dirs)[0]
@@ -427,7 +431,9 @@ def extract_builtin_skills() -> None:
                 # Check if SKILL.md exists
                 skill_md_in_zip = f"{root_dir}/SKILL.md"
                 if skill_md_in_zip not in zip_ref.namelist():
-                    console.print(f"[yellow]Warning: SKILL.md not found in {skill_file.name}[/yellow]")
+                    console.print(
+                        f"[yellow]Warning: SKILL.md not found in {skill_file.name}[/yellow]"
+                    )
                     continue
 
                 # Create target directory
@@ -440,7 +446,7 @@ def extract_builtin_skills() -> None:
                     if not zip_info.filename.startswith(root_dir + "/"):
                         continue
 
-                    rel_path = zip_info.filename[len(root_dir) + 1:]
+                    rel_path = zip_info.filename[len(root_dir) + 1 :]
                     if not rel_path:
                         continue
 

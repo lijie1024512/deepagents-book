@@ -226,8 +226,11 @@ class ToolCallMessage(Vertical):
     """
 
     # Max lines/chars to show in preview mode
+    # task() results use larger limits for better visibility
     _PREVIEW_LINES = 3
     _PREVIEW_CHARS = 200
+    _TASK_PREVIEW_LINES = 8
+    _TASK_PREVIEW_CHARS = 500
 
     def __init__(
         self,
@@ -350,8 +353,16 @@ class ToolCallMessage(Vertical):
         total_lines = len(lines)
         total_chars = len(output_stripped)
 
+        # Use larger preview limits for task() results
+        if self._tool_name == "task":
+            preview_lines = self._TASK_PREVIEW_LINES
+            preview_chars = self._TASK_PREVIEW_CHARS
+        else:
+            preview_lines = self._PREVIEW_LINES
+            preview_chars = self._PREVIEW_CHARS
+
         # Truncate if too many lines OR too many characters
-        needs_truncation = total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
+        needs_truncation = total_lines > preview_lines or total_chars > preview_chars
 
         if self._expanded:
             # Show full output
@@ -364,14 +375,14 @@ class ToolCallMessage(Vertical):
             self._full_widget.display = False
             if needs_truncation:
                 # Truncate by lines first, then by chars
-                if total_lines > self._PREVIEW_LINES:
-                    preview_text = "\n".join(lines[: self._PREVIEW_LINES])
+                if total_lines > preview_lines:
+                    preview_text = "\n".join(lines[:preview_lines])
                 else:
                     preview_text = output_stripped
 
                 # Also truncate by chars if still too long
-                if len(preview_text) > self._PREVIEW_CHARS:
-                    preview_text = preview_text[: self._PREVIEW_CHARS] + "..."
+                if len(preview_text) > preview_chars:
+                    preview_text = preview_text[:preview_chars] + "..."
 
                 self._preview_widget.update(preview_text)
                 self._preview_widget.display = True

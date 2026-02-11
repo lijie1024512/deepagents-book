@@ -31,6 +31,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.text import Text
 
+from deepagents_cli.conversation_logger import init_logger, log_assistant, log_tool, log_user
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
@@ -45,9 +46,11 @@ _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 console = Console()
 
 # Prompt style
-PROMPT_STYLE = Style.from_dict({
-    "prompt": "bold green",
-})
+PROMPT_STYLE = Style.from_dict(
+    {
+        "prompt": "bold green",
+    }
+)
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -104,9 +107,9 @@ def print_tool_result(tool_name: str, status: str, output: str | None = None) ->
         icon = "[green]✓[/green]"
     else:
         icon = "[red]✗[/red]"
-    
+
     console.print(f"{icon} [dim]{tool_name}[/dim]")
-    
+
     if output and len(output) > 200:
         # Truncate long output
         console.print(f"[dim]{output[:200]}...[/dim]")
@@ -117,7 +120,7 @@ def print_tool_result(tool_name: str, status: str, output: str | None = None) ->
 def print_diff(diff: str, file_path: str) -> None:
     """Print file diff."""
     console.print(f"[bold cyan]📝 {file_path}[/bold cyan]")
-    
+
     for line in diff.split("\n"):
         if line.startswith("+") and not line.startswith("+++"):
             console.print(f"[green]{line}[/green]")
@@ -142,35 +145,37 @@ def print_system(message: str) -> None:
 
 async def prompt_approval(action_request: ActionRequest, auto_approve: bool) -> dict[str, str]:
     """Prompt user for tool approval (async version).
-    
+
     Returns:
         Decision dict: {"type": "approve"}, {"type": "reject"}, or {"type": "auto_approve_all"}
     """
     if auto_approve:
         return {"type": "approve"}
-    
+
     tool_name = action_request.get("name", "unknown")
     tool_args = action_request.get("args", {})
-    
+
     console.print()
-    console.print(Panel(
-        f"[bold yellow]>>> {tool_name} Requires Approval <<<[/bold yellow]\n\n"
-        f"[dim]{format_tool_display(tool_name, tool_args)}[/dim]",
-        border_style="yellow",
-    ))
+    console.print(
+        Panel(
+            f"[bold yellow]>>> {tool_name} Requires Approval <<<[/bold yellow]\n\n"
+            f"[dim]{format_tool_display(tool_name, tool_args)}[/dim]",
+            border_style="yellow",
+        )
+    )
     console.print()
     console.print("[bold]Options:[/bold]")
     console.print("  [green]y[/green] - Approve")
     console.print("  [red]n[/red] - Reject")
     console.print("  [cyan]a[/cyan] - Auto-approve all this session")
     console.print()
-    
+
     # Create a temporary prompt session for approval input
     # This avoids conflicts with the main prompt session
     approval_session = PromptSession(
         style=PROMPT_STYLE,
     )
-    
+
     while True:
         try:
             choice = await approval_session.prompt_async(
@@ -200,7 +205,7 @@ async def run_rich_cli(
     initial_prompt: str | None = None,
 ) -> None:
     """Run the pure terminal CLI interface using Rich.
-    
+
     Args:
         agent: The LangGraph agent to execute
         assistant_id: Agent identifier for memory storage
@@ -211,21 +216,23 @@ async def run_rich_cli(
         initial_prompt: Optional prompt to auto-submit
     """
     from pathlib import Path
-    
+
     # Print welcome
     print_welcome()
-    
+
+    from deepagents_cli.config import settings
+
     # Set up prompt session with history
-    history_file = Path.home() / ".deepagents" / "history.txt"
+    history_file = settings.user_deepagents_dir / "history.txt"
     history_file.parent.mkdir(parents=True, exist_ok=True)
-    
+
     session: PromptSession = PromptSession(
         history=FileHistory(str(history_file)),
         style=PROMPT_STYLE,
     )
-    
+
     session_auto_approve = auto_approve
-    
+
     # Handle initial prompt
     if initial_prompt and initial_prompt.strip():
         print_user_message(initial_prompt)
@@ -237,7 +244,7 @@ async def run_rich_cli(
             backend=backend,
             auto_approve_ref=[session_auto_approve],
         )
-    
+
     # Main chat loop
     while True:
         try:
@@ -246,13 +253,13 @@ async def run_rich_cli(
                 [("class:prompt", "> ")],
                 multiline=False,
             )
-            
+
             if not user_input.strip():
                 continue
-            
+
             # Handle commands
             cmd = user_input.strip().lower()
-            
+
             if cmd in ("/quit", "/exit", "/q"):
                 console.print("[yellow]Goodbye![/yellow]")
                 break
@@ -271,6 +278,7 @@ async def run_rich_cli(
             elif user_input.startswith("!"):
                 # Shell command
                 import subprocess
+
                 cmd_str = user_input[1:].strip()
                 console.print()  # Add spacing after prompt
                 try:
@@ -293,11 +301,11 @@ async def run_rich_cli(
                 except Exception as e:
                     print_error(str(e))
                 continue
-            
+
             # Normal message - send to agent
             # Note: Don't print user message again - prompt_toolkit already displayed it
             console.print()  # Just add a blank line for spacing
-            
+
             await _execute_task_rich(
                 user_input=user_input,
                 agent=agent,
@@ -306,7 +314,7 @@ async def run_rich_cli(
                 backend=backend,
                 auto_approve_ref=[session_auto_approve],
             )
-            
+
         except (EOFError, KeyboardInterrupt):
             console.print("\n[yellow]Goodbye![/yellow]")
             break
@@ -324,7 +332,7 @@ async def _execute_task_rich(
     image_tracker: ImageTracker | None = None,
 ) -> None:
     """Execute a task with output to Rich console.
-    
+
     Args:
         user_input: The user's input message
         agent: The LangGraph agent
@@ -336,12 +344,12 @@ async def _execute_task_rich(
     """
     if auto_approve_ref is None:
         auto_approve_ref = [False]
-    
+
     # Parse file mentions
     prompt_text, mentioned_files = parse_file_mentions(user_input)
-    
+
     max_embed_bytes = 256 * 1024
-    
+
     if mentioned_files:
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
@@ -364,7 +372,7 @@ async def _execute_task_rich(
         final_input = "\n".join(context_parts)
     else:
         final_input = prompt_text
-    
+
     # Include images
     images_to_send = []
     if image_tracker:
@@ -373,7 +381,7 @@ async def _execute_task_rich(
         message_content = create_multimodal_content(final_input, images_to_send)
     else:
         message_content = final_input
-    
+
     config = {
         "configurable": {"thread_id": thread_id},
         "metadata": {
@@ -384,17 +392,23 @@ async def _execute_task_rich(
         if assistant_id
         else {},
     }
-    
+
+    # Initialize conversation logger for this session
+    init_logger(thread_id=thread_id, agent_name=assistant_id)
+
+    # Log the user message
+    log_user(user_input)
+
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[str | int, dict] = {}
     pending_text_by_namespace: dict[tuple, str] = {}
-    
+
     if image_tracker:
         image_tracker.clear()
-    
+
     stream_input: dict | Command = {"messages": [{"role": "user", "content": message_content}]}
-    
+
     # Show thinking indicator
     with Progress(
         SpinnerColumn(),
@@ -402,16 +416,16 @@ async def _execute_task_rich(
         transient=True,
     ) as progress:
         progress.add_task("thinking", total=None)
-        
+
         try:
             while True:
                 interrupt_occurred = False
                 hitl_response: dict[str, HITLResponse] = {}
                 pending_interrupts: dict[str, HITLRequest] = {}
-                
+
                 # Stop progress when we start getting content
                 first_content = True
-                
+
                 async for chunk in agent.astream(
                     stream_input,
                     stream_mode=["messages", "updates"],
@@ -421,16 +435,16 @@ async def _execute_task_rich(
                 ):
                     if not isinstance(chunk, tuple) or len(chunk) != 3:
                         continue
-                    
+
                     namespace, current_stream_mode, data = chunk
                     ns_key = tuple(namespace) if namespace else ()
                     is_main_agent = ns_key == ()
-                    
+
                     # Handle updates
                     if current_stream_mode == "updates":
                         if not isinstance(data, dict):
                             continue
-                        
+
                         if "__interrupt__" in data:
                             interrupts: list[Interrupt] = data["__interrupt__"]
                             if interrupts:
@@ -443,20 +457,29 @@ async def _execute_task_rich(
                                         interrupt_occurred = True
                                     except ValidationError:
                                         raise
-                    
+
                     # Handle messages
                     elif current_stream_mode == "messages":
                         if not is_main_agent:
+                            if isinstance(data, tuple) and len(data) == 2:
+                                sub_msg, _ = data
+                                if isinstance(sub_msg, ToolMessage):
+                                    name = getattr(sub_msg, "name", "")
+                                    if name:
+                                        if first_content:
+                                            progress.stop()
+                                            first_content = False
+                                        console.print(f"[dim]  子任务: {name} ✓[/dim]")
                             continue
-                        
+
                         if not isinstance(data, tuple) or len(data) != 2:
                             continue
-                        
+
                         message, _metadata = data
-                        
+
                         if _is_summarization_chunk(_metadata):
                             continue
-                        
+
                         if isinstance(message, HumanMessage):
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
@@ -466,45 +489,55 @@ async def _execute_task_rich(
                                 print_assistant_text(pending_text)
                                 pending_text_by_namespace[ns_key] = ""
                             continue
-                        
+
                         if isinstance(message, ToolMessage):
                             tool_name = getattr(message, "name", "")
                             tool_status = getattr(message, "status", "success")
                             tool_content = format_tool_message_content(message.content)
                             record = file_op_tracker.complete_with_message(message)
-                            
-                            print_tool_result(tool_name, tool_status, str(tool_content) if tool_content else None)
-                            
+
+                            print_tool_result(
+                                tool_name, tool_status, str(tool_content) if tool_content else None
+                            )
+
+                            # Log tool result
+                            output_str = str(tool_content) if tool_content else None
+                            log_tool(
+                                tool_name,
+                                result=output_str[:2000] if output_str else None,
+                                status=tool_status,
+                            )
+
                             if record and record.diff:
                                 print_diff(record.diff, record.display_path)
                             continue
-                        
+
                         if not hasattr(message, "content_blocks"):
                             continue
-                        
+
                         for block in message.content_blocks:
                             block_type = block.get("type")
-                            
+
                             if block_type == "text":
                                 text = block.get("text", "")
                                 if text:
                                     if first_content:
                                         progress.stop()
                                         first_content = False
-                                    
+
                                     pending_text = pending_text_by_namespace.get(ns_key, "")
                                     pending_text += text
                                     pending_text_by_namespace[ns_key] = pending_text
-                                    
+
                                     # Stream output character by character for smooth effect
                                     console.print(text, end="")
-                            
+
                             elif block_type in ("tool_call_chunk", "tool_call"):
                                 chunk_name = block.get("name")
                                 chunk_args = block.get("args")
                                 chunk_id = block.get("id")
                                 chunk_index = block.get("index")
-                                
+
                                 buffer_key: str | int
                                 if chunk_index is not None:
                                     buffer_key = chunk_index
@@ -512,17 +545,17 @@ async def _execute_task_rich(
                                     buffer_key = chunk_id
                                 else:
                                     buffer_key = f"unknown-{len(tool_call_buffers)}"
-                                
+
                                 buffer = tool_call_buffers.setdefault(
                                     buffer_key,
                                     {"name": None, "id": None, "args": None, "args_parts": []},
                                 )
-                                
+
                                 if chunk_name:
                                     buffer["name"] = chunk_name
                                 if chunk_id:
                                     buffer["id"] = chunk_id
-                                
+
                                 if isinstance(chunk_args, dict):
                                     buffer["args"] = chunk_args
                                 elif isinstance(chunk_args, str) and chunk_args:
@@ -532,12 +565,12 @@ async def _execute_task_rich(
                                     buffer["args"] = "".join(parts)
                                 elif chunk_args is not None:
                                     buffer["args"] = chunk_args
-                                
+
                                 buffer_name = buffer.get("name")
                                 buffer_id = buffer.get("id")
                                 if buffer_name is None:
                                     continue
-                                
+
                                 parsed_args = buffer.get("args")
                                 if isinstance(parsed_args, str):
                                     if not parsed_args:
@@ -548,87 +581,100 @@ async def _execute_task_rich(
                                         continue
                                 elif parsed_args is None:
                                     continue
-                                
+
                                 if not isinstance(parsed_args, dict):
                                     parsed_args = {"value": parsed_args}
-                                
+
                                 # Flush pending text
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 if pending_text:
                                     console.print()  # End streaming line
+                                    # Log assistant text before tool call
+                                    if ns_key == ():
+                                        log_assistant(pending_text)
                                     pending_text_by_namespace[ns_key] = ""
-                                
+
                                 if buffer_id and buffer_id not in displayed_tool_ids:
                                     displayed_tool_ids.add(buffer_id)
-                                    file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
-                                    
+                                    file_op_tracker.start_operation(
+                                        buffer_name, parsed_args, buffer_id
+                                    )
+
                                     if first_content:
                                         progress.stop()
                                         first_content = False
-                                    
+
                                     print_tool_call(buffer_name, parsed_args)
-                                
+                                    # Log tool call
+                                    log_tool(buffer_name, args=parsed_args)
+
                                 tool_call_buffers.pop(buffer_key, None)
-                        
+
                         if getattr(message, "chunk_position", None) == "last":
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
                                 console.print()  # End streaming line
                                 pending_text_by_namespace[ns_key] = ""
-                
+
                 # Flush remaining text
                 for ns_key, pending_text in list(pending_text_by_namespace.items()):
                     if pending_text:
                         console.print()
+                        # Log assistant response (only for main agent)
+                        if ns_key == ():
+                            log_assistant(pending_text)
                 pending_text_by_namespace.clear()
-                
+
                 # Handle HITL
                 if interrupt_occurred:
                     any_rejected = False
-                    
+
                     for interrupt_id, hitl_request in pending_interrupts.items():
                         if auto_approve_ref[0]:
-                            decisions = [{"type": "approve"} for _ in hitl_request["action_requests"]]
+                            decisions = [
+                                {"type": "approve"} for _ in hitl_request["action_requests"]
+                            ]
                             hitl_response[interrupt_id] = {"decisions": decisions}
                         else:
                             decisions = []
-                            
+
                             for action_request in hitl_request["action_requests"]:
-                                decision = await prompt_approval(action_request, auto_approve_ref[0])
-                                
+                                decision = await prompt_approval(
+                                    action_request, auto_approve_ref[0]
+                                )
+
                                 if decision.get("type") == "auto_approve_all":
                                     auto_approve_ref[0] = True
                                     decisions.append({"type": "approve"})
-                                    for _ in hitl_request["action_requests"][len(decisions):]:
+                                    for _ in hitl_request["action_requests"][len(decisions) :]:
                                         decisions.append({"type": "approve"})
                                     break
-                                
+
                                 decisions.append(decision)
-                                
+
                                 if decision.get("type") == "reject":
                                     any_rejected = True
                                     break
-                            
+
                             hitl_response[interrupt_id] = {"decisions": decisions}
-                            
+
                             if any_rejected:
                                 break
-                
+
                 if interrupt_occurred and hitl_response:
                     if any_rejected:
                         print_system("Command rejected. Tell the agent what you'd like instead.")
                         return
-                    
+
                     stream_input = Command(resume=hitl_response)
                 else:
                     break
-        
+
         except asyncio.CancelledError:
             print_system("Interrupted by user")
             return
         except KeyboardInterrupt:
             print_system("Interrupted by user")
             return
-    
-    console.print()  # Final newline
 
+    console.print()  # Final newline

@@ -38,7 +38,8 @@ class OutlineGenerator:
     def _load_yaml(self, file_path):
         """加载YAML文件"""
         import yaml
-        with open(file_path, 'r', encoding='utf-8') as f:
+
+        with open(file_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
 
     def generate(self, output_file):
@@ -63,7 +64,7 @@ class OutlineGenerator:
         # 写入文件
         output_path = Path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(content)
 
         print(f"大纲生成完成，共{self.chapters}章，输出文件：{output_file}")
@@ -73,19 +74,19 @@ class OutlineGenerator:
         world = self.world_config
         character = self.character_config
 
-        content = f"""# {world['novel_name']}
+        content = f"""# {world["novel_name"]}
 
 ## 小说基础信息
 
-【小说名称】: {world['novel_name']}
-【世界观】: {world['world_setting']}
-【主角金手指】: {character['cheat']}
-【主角性格类型】: {character['personality']}
-【故事线模式】: {world['storyline_mode']}
-【原创程度】: {world['originality']}
-【风格定位】: {world['style']}
-【预计篇幅】: {world['length']}
-【更新频率】: {world['update_frequency']}
+【小说名称】: {world["novel_name"]}
+【世界观】: {world["world_setting"]}
+【主角金手指】: {character["cheat"]}
+【主角性格类型】: {character["personality"]}
+【故事线模式】: {world["storyline_mode"]}
+【原创程度】: {world["originality"]}
+【风格定位】: {world["style"]}
+【预计篇幅】: {world["length"]}
+【更新频率】: {world["update_frequency"]}
 
 ---
 
@@ -94,10 +95,10 @@ class OutlineGenerator:
 
     def _generate_system_info(self):
         """生成系统设定部分"""
-        cheat = self.character_config.get('cheat', '')
+        cheat = self.character_config.get("cheat", "")
 
-        if '系统' not in cheat:
-            return ''
+        if "系统" not in cheat:
+            return ""
 
         content = f"""## {cheat}设定
 
@@ -133,40 +134,40 @@ class OutlineGenerator:
         content = f"""## 主角角色卡
 
 【基本信息】
-姓名: {character['name']}
-年龄: {character['age']}
-性别: {character['gender']}
-种族: {character['race']}
-身份: {character['identity']}
-外貌特征: {character['appearance']}
+姓名: {character["name"]}
+年龄: {character["age"]}
+性别: {character["gender"]}
+种族: {character["race"]}
+身份: {character["identity"]}
+外貌特征: {character["appearance"]}
 
 【力量属性】
-霸气等级: {character['haki_level']}
-能力类型: {character['ability_type']}
-特长领域: {character['specialties']}
-弱点: {character['weakness']}
+霸气等级: {character["haki_level"]}
+能力类型: {character["ability_type"]}
+特长领域: {character["specialties"]}
+弱点: {character["weakness"]}
 
 【特殊能力】
 
-**{character['cheat']}**:
-唯一功能: {character['cheat_function']}
-能量来源: {character['energy_source']}
+**{character["cheat"]}**:
+唯一功能: {character["cheat_function"]}
+能量来源: {character["energy_source"]}
 
 【性格深度】
 
-**核心性格**: {character['core_personality']}
+**核心性格**: {character["core_personality"]}
 
 **表面性格vs真实性格**:
-  - 表面（开局）: {character['surface_personality_start']}
-  - 真实（开局）: {character['real_personality_start']}
-  - 真实（中期）: {character['real_personality_mid']}
-  - 真实（后期）: {character['real_personality_end']}
+  - 表面（开局）: {character["surface_personality_start"]}
+  - 真实（开局）: {character["real_personality_start"]}
+  - 真实（中期）: {character["real_personality_mid"]}
+  - 真实（后期）: {character["real_personality_end"]}
 
 【背景故事】
-出身: {character['background']}
-成长经历: {character['growth']}
-关键转折: {character['turning_point']}
-当前状态: {character['current_state']}
+出身: {character["background"]}
+成长经历: {character["growth"]}
+关键转折: {character["turning_point"]}
+当前状态: {character["current_state"]}
 
 ---
 
@@ -179,14 +180,14 @@ class OutlineGenerator:
 
         content = f"""## 故事线结构
 
-### 第一卷：{storyline['volume1_name']}（1-{self.chapters}章）
+### 第一卷：{storyline["volume1_name"]}（1-{self.chapters}章）
 
 #### 卷概述
-**核心主题**: {storyline['volume1_theme']}
-**核心冲突**: {storyline['volume1_conflict']}
-**主角目标**: {storyline['volume1_goals']}
-**本卷收获**: {storyline['volume1_harvest']}
-**关键事件**: {storyline['volume1_events']}
+**核心主题**: {storyline["volume1_theme"]}
+**核心冲突**: {storyline["volume1_conflict"]}
+**主角目标**: {storyline["volume1_goals"]}
+**本卷收获**: {storyline["volume1_harvest"]}
+**关键事件**: {storyline["volume1_events"]}
 
 ---
 
@@ -242,12 +243,12 @@ def main():
     """主函数"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='小说大纲生成器')
-    parser.add_argument('--world', required=True, help='世界观文件路径')
-    parser.add_argument('--character', required=True, help='主角角色文件路径')
-    parser.add_argument('--storyline', required=True, help='故事线文件路径')
-    parser.add_argument('--chapters', type=int, default=20, help='目标章节数')
-    parser.add_argument('--output', required=True, help='输出文件路径')
+    parser = argparse.ArgumentParser(description="小说大纲生成器")
+    parser.add_argument("--world", required=True, help="世界观文件路径")
+    parser.add_argument("--character", required=True, help="主角角色文件路径")
+    parser.add_argument("--storyline", required=True, help="故事线文件路径")
+    parser.add_argument("--chapters", type=int, default=20, help="目标章节数")
+    parser.add_argument("--output", required=True, help="输出文件路径")
 
     args = parser.parse_args()
 
@@ -255,11 +256,11 @@ def main():
         world_file=args.world,
         character_file=args.character,
         storyline_file=args.storyline,
-        chapters=args.chapters
+        chapters=args.chapters,
     )
 
     generator.generate(args.output)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

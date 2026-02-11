@@ -13,6 +13,10 @@ Memory is organized by categories:
 - setting: 设定信息（世界观细节、规则）
 - decision: 决策记录（用户的选择、剧情分支）
 - summary: 摘要信息（章节摘要、大纲摘要）
+
+Storage backends:
+- SQLite (preferred): Uses NovelDatabase for ACID-compliant storage
+- JSON (legacy): Falls back to memory.json for old projects
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
+    from deepagents_cli.novel.database import NovelDatabase
     from deepagents_cli.novel.project import NovelProject
 
 # 记忆存储路径（项目级别）
@@ -37,6 +42,9 @@ _project_ref: "NovelProject | None" = None
 def init_memory_store(project_path: Path) -> None:
     """Initialize memory store for a project.
 
+    For SQLite-based projects, memory is stored in the database.
+    For legacy projects, falls back to memory.json.
+
     Args:
         project_path: Path to the novel project
     """
@@ -45,6 +53,15 @@ def init_memory_store(project_path: Path) -> None:
     _project_path = project_path
     _project_ref = None  # Will be loaded lazily
 
+    # Check if project uses SQLite
+    db_file = project_path / ".novel" / "novel.db"
+    if db_file.exists():
+        # SQLite mode - memory is stored in database
+        _memory_file = None
+        _memory_store = {}  # Not used in SQLite mode
+        return
+
+    # Legacy JSON mode
     memory_dir = project_path / ".novel" / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     _memory_file = memory_dir / "memory.json"
@@ -78,12 +95,26 @@ def _get_project() -> "NovelProject | None":
         return None
 
 
+def _get_db() -> "NovelDatabase | None":
+    """Get the database instance if project uses SQLite.
+
+    Returns:
+        NovelDatabase instance or None if not using SQLite
+    """
+    project = _get_project()
+    if project and project.uses_sqlite:
+        return project.db
+    return None
+
+
 def _save_memory() -> None:
-    """Save memory to disk."""
+    """Save memory to disk (legacy JSON mode only).
+
+    For SQLite mode, this is a no-op as data is persisted immediately.
+    """
     if _memory_file:
         _memory_file.write_text(
-            json.dumps(_memory_store, ensure_ascii=False, indent=2),
-            encoding="utf-8"
+            json.dumps(_memory_store, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
 
@@ -119,7 +150,6 @@ def _sync_to_project_state(category: str, key: str, content: str, action: str = 
             char = state.characters[key]
 
             # Try to extract status from content
-            content_lower = content.lower()
             if "收服" in content or "加入" in content:
                 char.status = "已收服"
             elif "敌对" in content or "对立" in content or "敌人" in content:
@@ -131,6 +161,7 @@ def _sync_to_project_state(category: str, key: str, content: str, action: str = 
 
             # Update last appearance chapter
             import re
+
             chapter_match = re.search(r"第(\d+)章", content)
             if chapter_match:
                 char.last_appearance = int(chapter_match.group(1))
@@ -148,6 +179,7 @@ def _sync_to_project_state(category: str, key: str, content: str, action: str = 
         else:
             # Parse chapter from content
             import re
+
             chapter_match = re.search(r"第(\d+)章", content)
             chapter = int(chapter_match.group(1)) if chapter_match else state.current_chapter
 
@@ -161,12 +193,14 @@ def _sync_to_project_state(category: str, key: str, content: str, action: str = 
                     break
 
             if not exists:
-                state.foreshadowing.append({
-                    "name": key,
-                    "content": content,
-                    "chapter": chapter,
-                    "resolved": False,
-                })
+                state.foreshadowing.append(
+                    {
+                        "name": key,
+                        "content": content,
+                        "chapter": chapter,
+                        "resolved": False,
+                    }
+                )
 
         project.save_state()
 
@@ -187,6 +221,7 @@ def _get_category_display_name(category: str) -> str:
 # ============================================================================
 # Memory Tools
 # ============================================================================
+
 
 @tool
 def remember(category: str, key: str, content: str) -> str:
@@ -224,6 +259,17 @@ def remember(category: str, key: str, content: str) -> str:
     if category not in valid_categories:
         return f"错误：类别必须是 {valid_categories} 之一，收到: {category}"
 
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        db.remember(category, key, content)
+        # Auto-sync character and foreshadow to specialized tables
+        if category in ("character", "foreshadow"):
+            _sync_to_project_state(category, key, content, action="add")
+        category_name = _get_category_display_name(category)
+        return f"已记住 [{category_name}] {key}"
+
+    # Legacy JSON mode
     if category not in _memory_store:
         _memory_store[category] = {}
 
@@ -266,6 +312,12 @@ def recall(category: str | None = None, key: str | None = None) -> str:
         recall("character", "索隆") → 返回索隆的信息
         recall("foreshadow") → 返回所有伏笔
     """
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        return _recall_from_db(db, category, key)
+
+    # Legacy JSON mode
     if not _memory_store:
         return "记忆为空，还没有记住任何信息。"
 
@@ -310,6 +362,61 @@ def recall(category: str | None = None, key: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def _recall_from_db(db: "NovelDatabase", category: str | None, key: str | None) -> str:
+    """Recall memory from SQLite database.
+
+    Args:
+        db: NovelDatabase instance
+        category: Optional category filter
+        key: Optional key filter
+
+    Returns:
+        Formatted memory content
+    """
+    result = db.recall(category, key)
+
+    if not result:
+        if category and key:
+            cat_name = _get_category_display_name(category)
+            return f"[{cat_name}] 中没有找到 '{key}'。"
+        elif category:
+            cat_name = _get_category_display_name(category)
+            return f"[{cat_name}] 类别下没有记忆。"
+        else:
+            return "记忆为空，还没有记住任何信息。"
+
+    # If specific key requested
+    if category and key:
+        if "content" in result:
+            cat_name = _get_category_display_name(category)
+            return f"【{cat_name} - {key}】\n{result['content']}"
+        return "未找到该记忆。"
+
+    # If specific category requested
+    if category:
+        cat_name = _get_category_display_name(category)
+        lines = [f"【{cat_name}】共 {len(result)} 条\n"]
+        for k, content in result.items():
+            lines.append(f"### {k}")
+            lines.append(content)
+            lines.append("")
+        return "\n".join(lines)
+
+    # All categories overview
+    lines = ["【记忆概览】\n"]
+    for cat, items in result.items():
+        cat_name = _get_category_display_name(cat)
+        lines.append(f"## {cat_name} ({len(items)} 条)")
+        for k in list(items.keys())[:5]:
+            content = items[k]
+            preview = content[:50] + "..." if len(content) > 50 else content
+            lines.append(f"  - {k}: {preview}")
+        if len(items) > 5:
+            lines.append(f"  - ...还有 {len(items) - 5} 条")
+        lines.append("")
+    return "\n".join(lines)
+
+
 @tool
 def forget(category: str, key: str) -> str:
     """删除过时或错误的记忆。
@@ -329,6 +436,20 @@ def forget(category: str, key: str) -> str:
     Examples:
         forget("foreshadow", "老鼠的秘密交易")  # 伏笔已回收
     """
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        if db.forget(category, key):
+            # Auto-sync character and foreshadow to project state
+            if category in ("character", "foreshadow"):
+                _sync_to_project_state(category, key, "", action="delete")
+            cat_name = _get_category_display_name(category)
+            return f"已删除 [{cat_name}] {key}"
+        else:
+            cat_name = _get_category_display_name(category)
+            return f"[{cat_name}] 中没有找到 '{key}'。"
+
+    # Legacy JSON mode
     if category not in _memory_store:
         cat_name = _get_category_display_name(category)
         return f"[{cat_name}] 类别不存在。"
@@ -372,6 +493,25 @@ def update_memory(category: str, key: str, content: str) -> str:
     Examples:
         update_memory("character", "索隆", "第8章：学会了新的剑技")
     """
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        existing = db.recall(category, key)
+        if existing and "content" in existing:
+            # Append to existing content
+            old_content = existing["content"]
+            new_content = f"{old_content}\n\n---\n{content}"
+            db.remember(category, key, new_content)
+            # Auto-sync character and foreshadow to project state
+            if category in ("character", "foreshadow"):
+                _sync_to_project_state(category, key, new_content, action="update")
+            cat_name = _get_category_display_name(category)
+            return f"已更新 [{cat_name}] {key}"
+        else:
+            # If not exists, use remember
+            return remember.invoke({"category": category, "key": key, "content": content})
+
+    # Legacy JSON mode
     if category not in _memory_store or key not in _memory_store[category]:
         # 如果不存在，等同于 remember
         return remember.invoke({"category": category, "key": key, "content": content})
@@ -398,6 +538,7 @@ def update_memory(category: str, key: str, content: str) -> str:
 # ============================================================================
 # Character Tools
 # ============================================================================
+
 
 @tool
 def update_character(
@@ -432,6 +573,56 @@ def update_character(
     if project is None:
         return "错误：无法访问项目状态。"
 
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        # Get current chapter
+        progress = db.get_progress()
+        current_ch = chapter if chapter is not None else progress.get("current_chapter", 1)
+
+        # Build update kwargs
+        update_kwargs: dict[str, Any] = {"last_appearance": current_ch}
+        updates = []
+
+        if status is not None:
+            update_kwargs["status"] = status
+            updates.append(f"状态: {status}")
+
+        if location is not None:
+            update_kwargs["location"] = location
+            updates.append(f"位置: {location}")
+
+        if power_level is not None:
+            update_kwargs["power_level"] = power_level
+            updates.append(f"实力: {power_level}")
+
+        if note is not None:
+            update_kwargs["notes"] = note
+
+        if not updates:
+            return "未指定任何更新项。请至少提供 status、location 或 power_level 之一。"
+
+        # Update in database
+        db.update_character(name, **update_kwargs)
+
+        # Also save to memory for better recall
+        memory_content = f"第{current_ch}章: " + ", ".join(updates)
+        if note:
+            memory_content += f"\n备注: {note}"
+        db.remember("character", name, memory_content)
+
+        result_lines = [
+            f"✅ 角色状态已更新: {name}",
+            "",
+        ]
+        result_lines.extend([f"  - {u}" for u in updates])
+        result_lines.append(f"  - 章节: 第{current_ch}章")
+        if note:
+            result_lines.append(f"  - 备注: {note}")
+
+        return "\n".join(result_lines)
+
+    # Legacy mode
     from deepagents_cli.novel.project import CharacterState
 
     state = project.state
@@ -504,6 +695,48 @@ def get_character(name: str) -> str:
     if project is None:
         return "错误：无法访问项目状态。"
 
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        char_data = db.get_character(name)
+        if char_data is None:
+            # Check in memory table
+            memory = db.recall("character", name)
+            if memory and "content" in memory:
+                return f"【角色】{name}\n\n{memory['content']}"
+            return f"未找到角色: {name}"
+
+        lines = [
+            f"【角色】{name}",
+            "",
+            f"状态: {char_data.get('status', '未知')}",
+            f"位置: {char_data.get('location', '未知')}",
+            f"实力: {char_data.get('power_level', '未知')}",
+            f"最后出场: 第{char_data.get('last_appearance', 0)}章",
+        ]
+
+        relationships = char_data.get("relationships", {})
+        if relationships:
+            lines.append("")
+            lines.append("关系:")
+            for target, relation in relationships.items():
+                lines.append(f"  - {target}: {relation}")
+
+        # Add memory content if available
+        memory = db.recall("character", name)
+        if memory and "content" in memory:
+            lines.append("")
+            lines.append("【记忆记录】")
+            lines.append(memory["content"])
+
+        if char_data.get("notes"):
+            lines.append("")
+            lines.append("【备注】")
+            lines.append(char_data["notes"])
+
+        return "\n".join(lines)
+
+    # Legacy mode
     state = project.state
 
     if name not in state.characters:
@@ -556,6 +789,18 @@ def list_characters(status_filter: str | None = None) -> str:
     project = _get_project()
     if project is None:
         # Fallback to memory
+        db = _get_db()
+        if db:
+            memory = db.recall("character")
+            if not memory:
+                return "暂无角色记录。"
+            lines = ["【角色列表】(来自记忆)\n"]
+            for name, content in memory.items():
+                if len(content) > 80:
+                    content = content[:80] + "..."
+                lines.append(f"- {name}: {content}")
+            return "\n".join(lines)
+
         if "character" not in _memory_store or not _memory_store["character"]:
             return "暂无角色记录。"
 
@@ -567,6 +812,58 @@ def list_characters(status_filter: str | None = None) -> str:
             lines.append(f"- {name}: {content}")
         return "\n".join(lines)
 
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        characters = db.list_characters(status_filter)
+        if not characters:
+            if status_filter:
+                return f"没有状态为 '{status_filter}' 的角色。"
+            return "暂无角色记录。"
+
+        # Group by status
+        by_status: dict[str, list[str]] = {}
+        for char in characters:
+            char_status = char.get("status", "未出场")
+            if char_status not in by_status:
+                by_status[char_status] = []
+            by_status[char_status].append(
+                f"{char['name']} (位置: {char.get('location', '未知')}, 第{char.get('last_appearance', 0)}章)"
+            )
+
+        lines = ["【角色列表】\n"]
+
+        # Order: 活跃, 已收服, 中立, 敌对, 死亡, 未出场
+        status_order = ["活跃", "已收服", "中立", "敌对", "死亡", "未出场"]
+        emoji_map = {
+            "活跃": "🟢",
+            "已收服": "✅",
+            "中立": "➖",
+            "敌对": "⚔️",
+            "死亡": "💀",
+            "未出场": "❓",
+        }
+
+        # Show characters in defined order
+        for status in status_order:
+            if status in by_status:
+                emoji = emoji_map.get(status, "")
+                lines.append(f"{emoji} {status} ({len(by_status[status])}人)")
+                for char_info in by_status[status]:
+                    lines.append(f"   - {char_info}")
+                lines.append("")
+
+        # Also show any characters with custom statuses not in the predefined list
+        for status, char_list in by_status.items():
+            if status not in status_order:
+                lines.append(f"📝 {status} ({len(char_list)}人)")
+                for char_info in char_list:
+                    lines.append(f"   - {char_info}")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    # Legacy mode
     state = project.state
 
     if not state.characters:
@@ -590,7 +887,9 @@ def list_characters(status_filter: str | None = None) -> str:
     status_order = ["已收服", "中立", "敌对", "死亡", "未出场"]
     for status in status_order:
         if status in by_status:
-            emoji = {"已收服": "✅", "中立": "➖", "敌对": "⚔️", "死亡": "💀", "未出场": "❓"}.get(status, "")
+            emoji = {"已收服": "✅", "中立": "➖", "敌对": "⚔️", "死亡": "💀", "未出场": "❓"}.get(
+                status, ""
+            )
             lines.append(f"{emoji} {status} ({len(by_status[status])}人)")
             for char_info in by_status[status]:
                 lines.append(f"   - {char_info}")
@@ -619,6 +918,17 @@ def add_relationship(character: str, target: str, relation: str) -> str:
     if project is None:
         return "错误：无法访问项目状态。"
 
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        # Get existing relationships or create empty dict
+        char_data = db.get_character(character)
+        relationships = char_data.get("relationships", {}) if char_data else {}
+        relationships[target] = relation
+        db.update_character(character, relationships=relationships)
+        return f"✅ 已添加关系: {character} → {target}: {relation}"
+
+    # Legacy mode
     from deepagents_cli.novel.project import CharacterState
 
     state = project.state
@@ -635,6 +945,7 @@ def add_relationship(character: str, target: str, relation: str) -> str:
 # ============================================================================
 # Foreshadow Tools
 # ============================================================================
+
 
 @tool
 def plant_foreshadow(
@@ -660,6 +971,27 @@ def plant_foreshadow(
         plant_foreshadow("神秘信件", "主角收到一封没有署名的信，暗示其身世")
         plant_foreshadow("老鼠的秘密", "老鼠上校与某势力有秘密交易", target_chapter=15)
     """
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        # Get current chapter
+        progress = db.get_progress()
+        current_ch = chapter if chapter is not None else progress.get("current_chapter", 1)
+
+        # Store in foreshadowing table
+        db.plant_foreshadow(name, content, current_ch, target_chapter)
+
+        # Also store in memory for recall
+        full_content = f"第{current_ch}章埋下: {content}"
+        if target_chapter:
+            full_content += f"\n预计第{target_chapter}章回收"
+        db.remember("foreshadow", name, full_content)
+
+        return f"📌 伏笔已埋下: {name}\n   章节: 第{current_ch}章" + (
+            f"\n   预计回收: 第{target_chapter}章" if target_chapter else ""
+        )
+
+    # Legacy mode
     project = _get_project()
     current_ch = chapter
     if current_ch is None:
@@ -674,17 +1006,17 @@ def plant_foreshadow(
         full_content += f"\n预计第{target_chapter}章回收"
 
     # Use remember to store (which will auto-sync to project state)
-    result = remember.invoke({
-        "category": "foreshadow",
-        "key": name,
-        "content": full_content
-    })
+    remember.invoke({"category": "foreshadow", "key": name, "content": full_content})
 
-    return f"📌 伏笔已埋下: {name}\n   章节: 第{current_ch}章" + (f"\n   预计回收: 第{target_chapter}章" if target_chapter else "")
+    return f"📌 伏笔已埋下: {name}\n   章节: 第{current_ch}章" + (
+        f"\n   预计回收: 第{target_chapter}章" if target_chapter else ""
+    )
 
 
 @tool
-def resolve_foreshadow(name: str, resolved_chapter: int | None = None, resolution: str | None = None) -> str:
+def resolve_foreshadow(
+    name: str, resolved_chapter: int | None = None, resolution: str | None = None
+) -> str:
     """回收伏笔。
 
     当伏笔被揭示/回收时使用此工具。
@@ -701,6 +1033,33 @@ def resolve_foreshadow(name: str, resolved_chapter: int | None = None, resolutio
         resolve_foreshadow("神秘信件", resolution="揭示是主角失散多年的父亲所写")
         resolve_foreshadow("老鼠的秘密", resolved_chapter=15)
     """
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        progress = db.get_progress()
+        current_ch = (
+            resolved_chapter if resolved_chapter is not None else progress.get("current_chapter", 1)
+        )
+
+        # Update in foreshadowing table
+        success = db.resolve_foreshadow(name, current_ch, resolution)
+        if not success:
+            return f"未找到伏笔: {name}"
+
+        # Also update memory
+        existing = db.recall("foreshadow", name)
+        if existing and "content" in existing:
+            old_content = existing["content"]
+            resolution_text = f"\n\n---\n第{current_ch}章已回收"
+            if resolution:
+                resolution_text += f": {resolution}"
+            db.remember("foreshadow", name, old_content + resolution_text)
+
+        return f"✅ 伏笔已回收: {name}\n   回收章节: 第{current_ch}章" + (
+            f"\n   回收方式: {resolution}" if resolution else ""
+        )
+
+    # Legacy mode
     project = _get_project()
     if project is None:
         return "错误：无法访问项目状态。"
@@ -734,7 +1093,9 @@ def resolve_foreshadow(name: str, resolved_chapter: int | None = None, resolutio
 
     project.save_state()
 
-    return f"✅ 伏笔已回收: {name}\n   回收章节: 第{current_ch}章" + (f"\n   回收方式: {resolution}" if resolution else "")
+    return f"✅ 伏笔已回收: {name}\n   回收章节: 第{current_ch}章" + (
+        f"\n   回收方式: {resolution}" if resolution else ""
+    )
 
 
 @tool
@@ -751,6 +1112,47 @@ def list_foreshadows(include_resolved: bool = False) -> str:
         list_foreshadows()  # 只看待回收的
         list_foreshadows(include_resolved=True)  # 看全部
     """
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        foreshadows = db.list_foreshadows(include_resolved)
+        if not foreshadows:
+            return "暂无伏笔记录。"
+
+        pending = [f for f in foreshadows if not f.get("resolved", False)]
+        resolved_list = [f for f in foreshadows if f.get("resolved", False)]
+
+        lines = []
+
+        if pending:
+            lines.append(f"【待回收伏笔】({len(pending)}个)\n")
+            for f in pending:
+                lines.append(f"📌 {f.get('name', '未命名')}")
+                content = f.get("content", "")
+                if len(content) > 50:
+                    content = content[:50] + "..."
+                lines.append(f"   第{f.get('planted_chapter', '?')}章: {content}")
+                if f.get("target_chapter"):
+                    lines.append(f"   预计回收: 第{f['target_chapter']}章")
+                lines.append("")
+
+        if include_resolved and resolved_list:
+            lines.append(f"\n【已回收伏笔】({len(resolved_list)}个)\n")
+            for f in resolved_list:
+                lines.append(f"✅ {f.get('name', '未命名')}")
+                lines.append(
+                    f"   埋下: 第{f.get('planted_chapter', '?')}章 → 回收: 第{f.get('resolved_chapter', '?')}章"
+                )
+                if f.get("resolution"):
+                    lines.append(f"   回收方式: {f['resolution']}")
+                lines.append("")
+
+        if not lines:
+            return "暂无伏笔记录。"
+
+        return "\n".join(lines)
+
+    # Legacy mode - fallback to memory store or project
     project = _get_project()
     if project is None:
         # Fallback to memory store
@@ -776,11 +1178,11 @@ def list_foreshadows(include_resolved: bool = False) -> str:
         return "暂无伏笔记录。"
 
     pending = []
-    resolved = []
+    resolved_list = []
 
     for f in state.foreshadowing:
         if f.get("resolved", False):
-            resolved.append(f)
+            resolved_list.append(f)
         else:
             pending.append(f)
 
@@ -793,11 +1195,13 @@ def list_foreshadows(include_resolved: bool = False) -> str:
             lines.append(f"   第{f.get('chapter', '?')}章: {f.get('content', '')[:50]}...")
             lines.append("")
 
-    if include_resolved and resolved:
-        lines.append(f"\n【已回收伏笔】({len(resolved)}个)\n")
-        for f in resolved:
+    if include_resolved and resolved_list:
+        lines.append(f"\n【已回收伏笔】({len(resolved_list)}个)\n")
+        for f in resolved_list:
             lines.append(f"✅ {f.get('name', f.get('content', '')[:20])}")
-            lines.append(f"   埋下: 第{f.get('chapter', '?')}章 → 回收: 第{f.get('resolved_chapter', '?')}章")
+            lines.append(
+                f"   埋下: 第{f.get('chapter', '?')}章 → 回收: 第{f.get('resolved_chapter', '?')}章"
+            )
             if f.get("resolution"):
                 lines.append(f"   回收方式: {f['resolution']}")
             lines.append("")
@@ -811,6 +1215,7 @@ def list_foreshadows(include_resolved: bool = False) -> str:
 # ============================================================================
 # Progress Tools
 # ============================================================================
+
 
 @tool
 def update_progress(
@@ -846,6 +1251,56 @@ def update_progress(
         update_progress(outline_total=50, writing_total=50)  # 设定总章节数
         update_progress(last_chapter_summary="主角初遇路飞，展现实力")  # 记录摘要
     """
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        update_kwargs: dict[str, Any] = {}
+        updates = []
+
+        if current_chapter is not None:
+            update_kwargs["current_chapter"] = current_chapter
+            updates.append(f"当前章节 → 第{current_chapter}章")
+
+        if outline_completed is not None:
+            update_kwargs["outline_completed"] = outline_completed
+            updates.append(f"大纲进度 → {outline_completed}章")
+
+        if outline_total is not None:
+            update_kwargs["outline_total"] = outline_total
+            updates.append(f"大纲总数 → {outline_total}章")
+
+        if writing_completed is not None:
+            update_kwargs["writing_completed"] = writing_completed
+            updates.append(f"正文进度 → {writing_completed}章")
+
+        if writing_total is not None:
+            update_kwargs["writing_total"] = writing_total
+            updates.append(f"正文总数 → {writing_total}章")
+
+        if last_chapter_summary is not None:
+            update_kwargs["last_chapter_summary"] = last_chapter_summary
+            updates.append("上章摘要 → 已更新")
+
+        if not updates:
+            return "未指定任何更新项。请至少提供一个参数。"
+
+        # Update in database
+        db.update_progress(**update_kwargs)
+
+        # Get updated progress for display
+        progress = db.get_progress()
+
+        result_lines = ["✓ 进度已更新："]
+        result_lines.extend([f"  - {u}" for u in updates])
+        result_lines.append("")
+        result_lines.append(
+            f"当前状态: 大纲 {progress.get('outline_completed', 0)}/{progress.get('outline_total') or '?'} 章, "
+            f"正文 {progress.get('writing_completed', 0)}/{progress.get('writing_total') or '?'} 章"
+        )
+
+        return "\n".join(result_lines)
+
+    # Legacy mode
     project = _get_project()
     if project is None:
         return "错误：无法访问项目状态。请确保已正确初始化项目。"
@@ -886,8 +1341,10 @@ def update_progress(
     result_lines = ["✓ 进度已更新："]
     result_lines.extend([f"  - {u}" for u in updates])
     result_lines.append("")
-    result_lines.append(f"当前状态: 大纲 {state.outline_completed}/{state.outline_total or '?'} 章, "
-                       f"正文 {state.writing_completed}/{state.writing_total or '?'} 章")
+    result_lines.append(
+        f"当前状态: 大纲 {state.outline_completed}/{state.outline_total or '?'} 章, "
+        f"正文 {state.writing_completed}/{state.writing_total or '?'} 章"
+    )
 
     return "\n".join(result_lines)
 
@@ -906,6 +1363,48 @@ def get_progress() -> str:
     if project is None:
         return "错误：无法访问项目状态。请确保已正确初始化项目。"
 
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        progress = db.get_progress()
+        config = project.config
+
+        outline_completed = progress.get("outline_completed", 0)
+        outline_total = progress.get("outline_total")
+        writing_completed = progress.get("writing_completed", 0)
+        writing_total = progress.get("writing_total")
+        current_chapter = progress.get("current_chapter", 1)
+        last_chapter_summary = progress.get("last_chapter_summary")
+
+        lines = [
+            f"【项目进度】《{config.title}》",
+            "",
+            f"大纲: {outline_completed}/{outline_total or '未设定'} 章",
+            f"正文: {writing_completed}/{writing_total or '未设定'} 章",
+            f"当前: 第 {current_chapter} 章",
+            "",
+        ]
+
+        # 计算完成百分比
+        if outline_total and outline_total > 0:
+            outline_pct = outline_completed / outline_total * 100
+            lines.append(f"大纲完成度: {outline_pct:.1f}%")
+
+        if writing_total and writing_total > 0:
+            writing_pct = writing_completed / writing_total * 100
+            lines.append(f"正文完成度: {writing_pct:.1f}%")
+
+        if last_chapter_summary:
+            lines.append("")
+            lines.append("【上章摘要】")
+            summary = last_chapter_summary
+            if len(summary) > 200:
+                summary = summary[:200] + "..."
+            lines.append(summary)
+
+        return "\n".join(lines)
+
+    # Legacy mode
     state = project.state
     config = project.config
 
@@ -986,6 +1485,45 @@ def complete_chapter(
     # 2. Save chapter summary
     project.save_chapter_summary(chapter, summary)
 
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        # 3. Update progress in database
+        db.update_progress(
+            writing_completed=chapter,
+            current_chapter=chapter + 1,
+            last_chapter_summary=summary,
+        )
+
+        # 4. Record to memory
+        chapter_key = f"第{chapter}章"
+        if title:
+            chapter_key += f" {title}"
+        db.remember("summary", chapter_key, summary)
+
+        # Get updated progress for display
+        progress = db.get_progress()
+        writing_completed = progress.get("writing_completed", 0)
+        writing_total = progress.get("writing_total")
+        current_chapter = progress.get("current_chapter", chapter + 1)
+
+        # Calculate word count
+        word_count = len(content)
+
+        result_lines = [
+            f"✅ 第{chapter}章已完成！",
+            "",
+            f"📄 内容: {word_count} 字",
+            f"📝 摘要: {len(summary)} 字",
+            f"💾 文件: chapters/volume-{(chapter - 1) // 50 + 1}/chapter-{chapter:03d}.md",
+            "",
+            f"📊 当前进度: 正文 {writing_completed}/{writing_total or '?'} 章",
+            f"📍 下一章: 第{current_chapter}章",
+        ]
+
+        return "\n".join(result_lines)
+
+    # Legacy mode
     # 3. Update progress
     state = project.state
     state.writing_completed = max(state.writing_completed, chapter)
@@ -998,11 +1536,7 @@ def complete_chapter(
     if title:
         chapter_key += f" {title}"
 
-    remember.invoke({
-        "category": "summary",
-        "key": chapter_key,
-        "content": summary
-    })
+    remember.invoke({"category": "summary", "key": chapter_key, "content": summary})
 
     # Calculate word count
     word_count = len(content)
@@ -1065,7 +1599,27 @@ def complete_outline(
     outline_file = outline_dir / f"chapter-{chapter:03d}.md"
     outline_file.write_text(full_outline, encoding="utf-8")
 
-    # Update progress
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        # Update progress in database
+        db.update_progress(outline_completed=chapter)
+
+        # Get updated progress for display
+        progress = db.get_progress()
+        outline_completed = progress.get("outline_completed", 0)
+        outline_total = progress.get("outline_total")
+
+        result_lines = [
+            f"✅ 第{chapter}章大纲已完成！",
+            "",
+            f"💾 文件: outline/volume-{volume}/chapter-{chapter:03d}.md",
+            f"📊 当前进度: 大纲 {outline_completed}/{outline_total or '?'} 章",
+        ]
+
+        return "\n".join(result_lines)
+
+    # Legacy mode - Update progress
     state = project.state
     state.outline_completed = max(state.outline_completed, chapter)
     project.save_state()
@@ -1081,11 +1635,288 @@ def complete_outline(
 
 
 # ============================================================================
+# Project Initialization Tool
+# ============================================================================
+
+
+@tool
+def init_novel_project(
+    title: str,
+    world_type: str = "original",
+    directory: str | None = None,
+) -> str:
+    """初始化一个新的小说项目。
+
+    当用户说"我想写一本小说"、"帮我创建一个新项目"时使用此工具。
+
+    Args:
+        title: 小说标题，如"海贼王之唯我独尊"
+        world_type: 世界观类型，可选值：
+            - onepiece: 海贼王世界观
+            - naruto: 火影忍者世界观
+            - bleach: 死神世界观
+            - original: 原创世界观（默认）
+        directory: 项目目录（可选），默认创建在当前目录/novels/<title>
+
+    Returns:
+        创建结果和下一步建议
+
+    Examples:
+        init_novel_project("海贼王之唯我独尊", "onepiece")
+        init_novel_project("我的原创小说")
+        init_novel_project("火影之最强", "naruto", "/path/to/my/novels")
+    """
+    global _project_path, _project_ref, _memory_file, _memory_store
+
+    # Determine project path
+    if directory:
+        base_dir = Path(directory)
+    else:
+        from deepagents_cli.novel.project import get_novels_base_dir
+
+        base_dir = get_novels_base_dir()
+
+    project_path = base_dir / title
+
+    # Check if already exists
+    if project_path.exists() and any(project_path.iterdir()):
+        return f"❌ 错误：目录已存在且不为空: {project_path}\n\n请选择其他标题或删除现有目录。"
+
+    # Validate world_type
+    valid_worlds = ["onepiece", "naruto", "bleach", "original"]
+    if world_type not in valid_worlds:
+        return f"❌ 错误：无效的世界观类型 '{world_type}'。\n\n可选值: {', '.join(valid_worlds)}"
+
+    try:
+        # Create the project
+        from deepagents_cli.novel.project import NovelProject
+
+        base_dir.mkdir(parents=True, exist_ok=True)
+        project = NovelProject.create(project_path, title, world_type)
+
+        # Update global state to point to new project
+        _project_path = project_path
+        _project_ref = project
+        _memory_file = None  # SQLite mode
+        _memory_store = {}
+
+        # Initialize memory store for the new project
+        init_memory_store(project_path)
+
+        # Build success message
+        world_display = {
+            "onepiece": "海贼王",
+            "naruto": "火影忍者",
+            "bleach": "死神",
+            "original": "原创",
+        }.get(world_type, world_type)
+
+        result = f"""✅ 小说项目创建成功！
+
+📖 项目信息
+- 标题: 《{title}》
+- 世界观: {world_display}
+- 位置: {project_path}
+
+📁 项目结构
+{project_path}/
+├── .novel/          # 项目配置和数据库
+├── world/           # 世界观设定
+├── characters/      # 角色档案
+├── outline/         # 大纲文件
+├── chapters/        # 正文章节
+└── output/          # 导出文件
+
+🎯 下一步建议
+现在我们可以开始创作了！你想要：
+
+A. 先设计主角 - 确定主角的背景、性格、能力
+B. 先规划整体框架 - 确定故事的开端、发展、高潮、结局
+C. 直接开始写第一章大纲 - 边写边完善设定
+D. 导入已有的设定 - 如果你已经有想法，可以告诉我
+
+请选择，或者直接告诉我你的想法！"""
+
+        return result
+
+    except Exception as e:
+        return f"❌ 创建项目失败: {e}\n\n请检查目录权限或联系开发者。"
+
+
+@tool
+def get_project_status() -> str:
+    """获取当前项目的完整状态。
+
+    返回项目的所有关键信息，包括进度、角色、伏笔等。
+
+    Returns:
+        项目状态的完整报告
+
+    Examples:
+        get_project_status()
+    """
+    project = _get_project()
+    if project is None:
+        return """❌ 未找到小说项目。
+
+你可以：
+1. 使用 init_novel_project("标题", "世界观") 创建新项目
+2. 或者告诉我"我想写一本xxx小说"，我帮你创建"""
+
+    db = _get_db()
+    config = project.config
+
+    lines = [
+        f"📖 【项目状态】《{config.title}》",
+        "",
+    ]
+
+    # World info
+    world_display = {
+        "onepiece": "海贼王",
+        "naruto": "火影忍者",
+        "bleach": "死神",
+        "original": "原创",
+        "unset": "未指定",
+    }.get(config.world_type, config.world_type)
+    lines.append(f"🌍 世界观: {world_display}")
+    lines.append(f"📂 位置: {project.path}")
+    lines.append("")
+
+    # Progress
+    if db:
+        progress = db.get_progress()
+        outline_completed = progress.get("outline_completed", 0)
+        outline_total = progress.get("outline_total", 50)
+        writing_completed = progress.get("writing_completed", 0)
+        writing_total = progress.get("writing_total", 50)
+        current_chapter = progress.get("current_chapter", 1)
+
+        lines.append("📊 【创作进度】")
+        lines.append(
+            f"   大纲: {outline_completed}/{outline_total} 章 ({outline_completed / outline_total * 100:.0f}%)"
+        )
+        lines.append(
+            f"   正文: {writing_completed}/{writing_total} 章 ({writing_completed / writing_total * 100:.0f}%)"
+        )
+        lines.append(f"   当前: 第 {current_chapter} 章")
+        lines.append("")
+
+        # Characters
+        characters = db.list_characters()
+        if characters:
+            lines.append(f"👥 【角色状态】({len(characters)}人)")
+            by_status: dict[str, list[str]] = {}
+            for c in characters:
+                status = c.get("status", "未出场")
+                if status not in by_status:
+                    by_status[status] = []
+                by_status[status].append(c["name"])
+
+            for status, names in by_status.items():
+                lines.append(
+                    f"   {status}: {', '.join(names[:5])}"
+                    + (f" 等{len(names)}人" if len(names) > 5 else "")
+                )
+            lines.append("")
+
+        # Foreshadows
+        foreshadows = db.list_foreshadows(include_resolved=False)
+        if foreshadows:
+            lines.append(f"📌 【待回收伏笔】({len(foreshadows)}个)")
+            for f in foreshadows[:5]:
+                lines.append(f"   - {f.get('name', '?')}: 第{f.get('planted_chapter', '?')}章埋下")
+            if len(foreshadows) > 5:
+                lines.append(f"   ...还有 {len(foreshadows) - 5} 个")
+            lines.append("")
+
+        # Memory summary
+        memory = db.recall()
+        if memory:
+            total_entries = sum(len(items) for items in memory.values())
+            lines.append(f"🧠 【记忆系统】({total_entries}条)")
+            for cat, items in memory.items():
+                cat_name = _get_category_display_name(cat)
+                lines.append(f"   {cat_name}: {len(items)}条")
+            lines.append("")
+
+    # Suggestions
+    lines.append("💡 【建议下一步】")
+    if db:
+        progress = db.get_progress()
+        outline_completed = progress.get("outline_completed", 0)
+        writing_completed = progress.get("writing_completed", 0)
+        current_chapter = progress.get("current_chapter", 1)
+
+        if outline_completed == 0:
+            lines.append("   A. 开始规划第一卷的故事框架")
+            lines.append("   B. 先设计主角和核心设定")
+        elif writing_completed < outline_completed:
+            lines.append(f"   A. 继续写第{current_chapter}章正文")
+            lines.append(f"   B. 先完善第{outline_completed + 1}章大纲")
+        else:
+            lines.append(f"   A. 规划第{outline_completed + 1}章大纲")
+            lines.append(f"   B. 回顾优化已有章节")
+
+        lines.append("   C. 查看/修改角色设定")
+        lines.append("   D. 检查伏笔回收情况")
+    else:
+        lines.append("   项目使用旧版存储，建议运行 migrate 命令升级")
+
+    return "\n".join(lines)
+
+
+# ============================================================================
 # Helper functions for middleware
 # ============================================================================
 
+
 def get_memory_summary() -> str:
     """Get a brief summary of all memories for injection into system prompt."""
+    # Use SQLite if available
+    db = _get_db()
+    if db:
+        all_memory = db.recall()
+        if not all_memory:
+            return ""
+
+        lines = ["【Agent记忆状态】"]
+
+        # 角色
+        if "character" in all_memory:
+            chars = list(all_memory["character"].keys())
+            lines.append(
+                f"- 已记录角色: {', '.join(chars[:5])}"
+                + (f" 等{len(chars)}个" if len(chars) > 5 else "")
+            )
+
+        # 伏笔
+        if "foreshadow" in all_memory:
+            foreshadows = list(all_memory["foreshadow"].keys())
+            lines.append(
+                f"- 待回收伏笔: {', '.join(foreshadows[:3])}"
+                + (f" 等{len(foreshadows)}个" if len(foreshadows) > 3 else "")
+            )
+
+        # 最近决策
+        if "decision" in all_memory:
+            decisions = list(all_memory["decision"].keys())
+            lines.append(
+                f"- 用户决策: {', '.join(decisions[:3])}"
+                + (f" 等{len(decisions)}个" if len(decisions) > 3 else "")
+            )
+
+        # 章节摘要
+        if "summary" in all_memory:
+            summaries = list(all_memory["summary"].keys())
+            lines.append(f"- 章节摘要: {len(summaries)} 章")
+
+        lines.append("")
+        lines.append("使用 recall() 工具查看详细记忆内容。")
+
+        return "\n".join(lines)
+
+    # Legacy JSON mode
     if not _memory_store:
         return ""
 
@@ -1094,17 +1925,26 @@ def get_memory_summary() -> str:
     # 角色
     if "character" in _memory_store:
         chars = list(_memory_store["character"].keys())
-        lines.append(f"- 已记录角色: {', '.join(chars[:5])}" + (f" 等{len(chars)}个" if len(chars) > 5 else ""))
+        lines.append(
+            f"- 已记录角色: {', '.join(chars[:5])}"
+            + (f" 等{len(chars)}个" if len(chars) > 5 else "")
+        )
 
     # 伏笔
     if "foreshadow" in _memory_store:
         foreshadows = list(_memory_store["foreshadow"].keys())
-        lines.append(f"- 待回收伏笔: {', '.join(foreshadows[:3])}" + (f" 等{len(foreshadows)}个" if len(foreshadows) > 3 else ""))
+        lines.append(
+            f"- 待回收伏笔: {', '.join(foreshadows[:3])}"
+            + (f" 等{len(foreshadows)}个" if len(foreshadows) > 3 else "")
+        )
 
     # 最近决策
     if "decision" in _memory_store:
         decisions = list(_memory_store["decision"].keys())
-        lines.append(f"- 用户决策: {', '.join(decisions[:3])}" + (f" 等{len(decisions)}个" if len(decisions) > 3 else ""))
+        lines.append(
+            f"- 用户决策: {', '.join(decisions[:3])}"
+            + (f" 等{len(decisions)}个" if len(decisions) > 3 else "")
+        )
 
     # 章节摘要
     if "summary" in _memory_store:
@@ -1117,9 +1957,146 @@ def get_memory_summary() -> str:
     return "\n".join(lines)
 
 
+# Phase workflow definition
+PHASE_ORDER = ["brainstorm", "engine", "character", "outline", "writing", "revision"]
+
+PHASE_LABELS = {
+    "brainstorm": "脑洞构思",
+    "engine": "引擎设计",
+    "character": "角色塑造",
+    "outline": "大纲规划",
+    "writing": "正文写作",
+    "revision": "修订润色",
+}
+
+PHASE_PREREQUISITES: dict[str, list[str]] = {
+    "brainstorm": [],
+    "engine": ["brainstorm"],
+    "character": ["engine"],
+    "outline": ["character"],
+    "writing": ["outline"],
+    "revision": ["writing"],
+}
+
+
+@tool
+def advance_phase(
+    target_phase: str,
+    reason: str,
+    skip: bool = False,
+    back: bool = False,
+) -> str:
+    """推进或切换当前创作阶段。
+
+    Args:
+        target_phase: 目标阶段 (brainstorm/engine/character/outline/writing/revision)
+        reason: 推进原因说明
+        skip: 是否跳过前置检查（会记录警告）
+        back: 是否回退到之前的阶段
+
+    Returns:
+        操作结果说明
+
+    Examples:
+        advance_phase(target_phase="engine", reason="脑洞阶段已完成，用户确认了类型和吸引力")
+        advance_phase(target_phase="brainstorm", reason="需要重新构思", back=True)
+        advance_phase(target_phase="outline", reason="用户要求跳过角色阶段", skip=True)
+    """
+    db = _get_db()
+    if db is None:
+        return "错误：无法访问数据库。请确保项目已初始化。"
+
+    if target_phase not in PHASE_ORDER:
+        return f"错误：无效的阶段 '{target_phase}'。有效阶段: {', '.join(PHASE_ORDER)}"
+
+    progress = db.get_progress()
+    current = progress.get("current_phase", "brainstorm")
+    phase_completed = progress.get("phase_completed", {})
+
+    current_idx = PHASE_ORDER.index(current) if current in PHASE_ORDER else 0
+    target_idx = PHASE_ORDER.index(target_phase)
+
+    # Back mode: allow going to any earlier phase
+    if back:
+        if target_idx >= current_idx:
+            return f"错误：回退目标 '{PHASE_LABELS[target_phase]}' 不在当前阶段 '{PHASE_LABELS[current]}' 之前。"
+        db.update_progress(current_phase=target_phase)
+        db.remember(
+            "decision",
+            f"phase_back_{datetime.now().isoformat()}",
+            f"从 {PHASE_LABELS[current]} 回退到 {PHASE_LABELS[target_phase]}：{reason}",
+        )
+        return (
+            f"已回退到 [{PHASE_LABELS[target_phase]}] 阶段。\n"
+            f"原因：{reason}\n"
+            f"可以重新开始该阶段的工作。"
+        )
+
+    # Forward: check prerequisites
+    if not skip:
+        prereqs = PHASE_PREREQUISITES.get(target_phase, [])
+        missing = [p for p in prereqs if not phase_completed.get(p)]
+        if missing:
+            missing_labels = [PHASE_LABELS[p] for p in missing]
+            return (
+                f"错误：前置阶段未完成: {', '.join(missing_labels)}。\n"
+                f"如需跳过，请设置 skip=True 并说明原因。"
+            )
+
+    # Record skip warning
+    if skip:
+        prereqs = PHASE_PREREQUISITES.get(target_phase, [])
+        missing = [p for p in prereqs if not phase_completed.get(p)]
+        if missing:
+            missing_labels = [PHASE_LABELS[p] for p in missing]
+            db.remember(
+                "decision",
+                f"phase_skip_{datetime.now().isoformat()}",
+                f"跳过前置阶段 {', '.join(missing_labels)} 直接进入 {PHASE_LABELS[target_phase]}：{reason}",
+            )
+
+    # Mark current phase as completed
+    phase_completed[current] = datetime.now().isoformat()
+    db.update_progress(current_phase=target_phase, phase_completed=phase_completed)
+
+    # Record decision
+    db.remember(
+        "decision",
+        f"phase_advance_{datetime.now().isoformat()}",
+        f"从 {PHASE_LABELS[current]} 推进到 {PHASE_LABELS[target_phase]}：{reason}",
+    )
+
+    skip_note = "（跳过了前置检查）" if skip else ""
+    return (
+        f"已推进到 [{PHASE_LABELS[target_phase]}] 阶段。{skip_note}\n"
+        f"原因：{reason}\n"
+        f"阶段完成记录: {', '.join(PHASE_LABELS[p] for p in phase_completed if phase_completed[p])}"
+    )
+
+
+def get_novel_bootstrap_tools() -> list:
+    """Get minimal set of novel tools for the general CLI.
+
+    These tools allow the general CLI to create proper novel project
+    structures when users say "create a novel" outside of
+    'deepagents novel start'. Only includes project initialization
+    and status tools — not the full memory/character/foreshadow set.
+
+    Returns:
+        List of tools: [init_novel_project, get_project_status]
+    """
+    return [
+        init_novel_project,
+        get_project_status,
+    ]
+
+
 def get_all_memory_tools() -> list:
     """Get all memory tools."""
     return [
+        # Project tools
+        init_novel_project,
+        get_project_status,
         # Memory tools
         remember,
         recall,
@@ -1137,6 +2114,8 @@ def get_all_memory_tools() -> list:
         # Progress tools
         update_progress,
         get_progress,
+        # Phase tools
+        advance_phase,
         # Chapter completion tools
         complete_chapter,
         complete_outline,
@@ -1145,6 +2124,9 @@ def get_all_memory_tools() -> list:
 
 __all__ = [
     "init_memory_store",
+    # Project tools
+    "init_novel_project",
+    "get_project_status",
     # Memory tools
     "remember",
     "recall",
@@ -1162,10 +2144,15 @@ __all__ = [
     # Progress tools
     "update_progress",
     "get_progress",
+    # Phase tools
+    "advance_phase",
+    "PHASE_ORDER",
+    "PHASE_LABELS",
     # Chapter completion tools
     "complete_chapter",
     "complete_outline",
     # Helper functions
     "get_memory_summary",
     "get_all_memory_tools",
+    "get_novel_bootstrap_tools",
 ]

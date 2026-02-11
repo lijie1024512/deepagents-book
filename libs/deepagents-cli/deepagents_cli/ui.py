@@ -129,7 +129,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         # Task: show the task description
         if "description" in tool_args:
             desc = str(tool_args["description"])
-            desc = truncate_value(desc, 100)
+            desc = truncate_value(desc, 200)
             return f'{tool_name}("{desc}")'
 
     elif tool_name == "write_todos":

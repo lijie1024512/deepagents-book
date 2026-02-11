@@ -127,7 +127,7 @@ Use memory when the knowledge is:
 - Something to always keep in mind
 - A simple rule or pattern
 
-**Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
+**Global** (`.deepagents/agent/AGENTS.md`): Agent-specific preferences and guidelines
 **Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
 
 ### → Skill for reusable workflows and methodologies
@@ -146,7 +146,7 @@ If we established best practices around a workflow or process, capture them in a
 **Example:** If we discussed best practices for code review, create a `code-review` skill that encodes those practices into a reusable workflow.
 
 ### Skill Location
-`~/.deepagents/agent/skills/<skill-name>/SKILL.md`
+`.deepagents/agent/skills/<skill-name>/SKILL.md`
 
 ### Skill Structure
 ```
@@ -579,7 +579,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /help")
+                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /logs, /help")
             )
 
         elif cmd == "/version":
@@ -620,6 +620,37 @@ class DeepAgentsApp(App):
                 await self._mount_message(SystemMessage(f"Current context: {formatted} tokens"))
             else:
                 await self._mount_message(SystemMessage("No token usage yet"))
+        elif cmd == "/logs" or cmd.startswith("/logs "):
+            from deepagents_cli.config import settings
+            from deepagents_cli.conversation_logger import get_logger, list_logs, view_log
+
+            await self._mount_message(UserMessage(command))
+
+            if cmd == "/logs":
+                # Show logs info and current session path
+                logger = get_logger()
+                log_dir = settings.user_deepagents_dir / "logs"
+                logs = list_logs(limit=5)
+
+                if logger:
+                    msg = f"Current log: {logger.get_log_path()}\n\n"
+                else:
+                    msg = ""
+
+                if logs:
+                    msg += "Recent logs:\n"
+                    for log in logs:
+                        msg += f"  - {log['thread_id']} ({log['modified'][:10]})\n"
+                    msg += f"\nLogs directory: {log_dir}"
+                else:
+                    msg += f"No logs yet. Logs directory: {log_dir}"
+
+                await self._mount_message(SystemMessage(msg))
+            elif cmd.startswith("/logs "):
+                # View specific log
+                thread_id = cmd[6:].strip()
+                content = view_log(thread_id, recent_only=20)
+                await self._mount_message(SystemMessage(f"Log for {thread_id}:\n\n{content}"))
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""

@@ -132,6 +132,22 @@ def parse_args() -> argparse.Namespace:
     threads_delete = threads_sub.add_parser("delete", help="Delete a thread")
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
 
+    # Logs command
+    logs_parser = subparsers.add_parser("logs", help="View conversation logs")
+    logs_sub = logs_parser.add_subparsers(dest="logs_command")
+
+    # logs list
+    logs_list = logs_sub.add_parser("list", help="List available logs")
+    logs_list.add_argument("--limit", type=int, default=20, help="Max logs to show (default: 20)")
+
+    # logs view
+    logs_view = logs_sub.add_parser("view", help="View a specific log")
+    logs_view.add_argument("thread_id", help="Thread ID to view")
+    logs_view.add_argument("--recent", type=int, default=None, help="Show only last N entries")
+
+    # logs path
+    logs_path = logs_sub.add_parser("path", help="Show logs directory path")
+
     # Default interactive mode
     parser.add_argument(
         "--agent",
@@ -411,6 +427,44 @@ def cli_main() -> None:
                 asyncio.run(delete_thread_command(args.thread_id))
             else:
                 console.print("[yellow]Usage: deepagents threads <list|delete>[/yellow]")
+        elif args.command == "logs":
+            from deepagents_cli.conversation_logger import list_logs, view_log
+            from rich.table import Table
+
+            if args.logs_command == "list":
+                logs = list_logs(limit=getattr(args, "limit", 20))
+                if not logs:
+                    console.print("[yellow]No logs found.[/yellow]")
+                    console.print("[dim]Logs will be created when you start conversations.[/dim]")
+                else:
+                    table = Table(title="Conversation Logs", show_header=True)
+                    table.add_column("Thread ID", style="bold")
+                    table.add_column("Size")
+                    table.add_column("Last Modified", style="dim")
+                    for log in logs:
+                        size_kb = log["size"] / 1024
+                        table.add_row(
+                            log["thread_id"],
+                            f"{size_kb:.1f}KB",
+                            log["modified"][:19].replace("T", " "),
+                        )
+                    console.print(table)
+            elif args.logs_command == "view":
+                content = view_log(
+                    args.thread_id,
+                    recent_only=getattr(args, "recent", None),
+                )
+                from rich.markdown import Markdown
+
+                console.print(Markdown(content))
+            elif args.logs_command == "path":
+                log_dir = settings.user_deepagents_dir / "logs"
+                console.print(f"Logs directory: [bold]{log_dir}[/bold]")
+                if log_dir.exists():
+                    log_count = len(list(log_dir.glob("*.md")))
+                    console.print(f"[dim]Contains {log_count} log file(s)[/dim]")
+            else:
+                console.print("[yellow]Usage: deepagents logs <list|view|path>[/yellow]")
         else:
             # Interactive mode - handle thread resume
             thread_id = None
@@ -462,7 +516,7 @@ def cli_main() -> None:
             # Default: Windows uses terminal mode, others use TUI
             use_terminal_mode = getattr(args, "terminal", False)
             use_tui_mode = getattr(args, "tui", False)
-            
+
             if use_terminal_mode:
                 # Explicitly requested terminal mode
                 run_func = run_terminal_cli_async

@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli.conversation_logger import init_logger, log_assistant, log_tool, log_user
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
@@ -91,6 +92,28 @@ class TextualUIAdapter:
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         self._pending_text = ""
         self._token_tracker: Any = None
+
+        # Scroll throttle for streaming: minimum interval between scroll calls
+        self._last_scroll_time: float = 0.0
+        self._scroll_interval: float = 0.3  # 300ms throttle
+
+    def _throttled_scroll(self) -> None:
+        """Call scroll_to_bottom with time-based throttling.
+
+        Only scrolls if at least _scroll_interval seconds have passed
+        since the last scroll. This prevents excessive scroll calls
+        during rapid streaming while keeping the view following content.
+        Respects smart scroll (won't scroll if user has scrolled up).
+        """
+        if self._scroll_to_bottom is None:
+            return
+
+        import time
+
+        now = time.monotonic()
+        if now - self._last_scroll_time >= self._scroll_interval:
+            self._scroll_to_bottom()
+            self._last_scroll_time = now
 
     def set_token_tracker(self, tracker: Any) -> None:
         """Set the token tracker for usage tracking."""
@@ -208,6 +231,12 @@ async def execute_task_textual(
         else {},
     }
 
+    # Initialize conversation logger for this session
+    init_logger(thread_id=thread_id, agent_name=assistant_id)
+
+    # Log the user message
+    log_user(user_input)
+
     captured_input_tokens = 0
     captured_output_tokens = 0
 
@@ -288,7 +317,14 @@ async def execute_task_textual(
                 # Handle MESSAGES stream - for content and tool calls
                 elif current_stream_mode == "messages":
                     # Skip subagent outputs - only render main agent content in chat
+                    # But extract tool names for status bar updates
                     if not is_main_agent:
+                        if isinstance(data, tuple) and len(data) == 2:
+                            sub_msg, _ = data
+                            if isinstance(sub_msg, ToolMessage):
+                                name = getattr(sub_msg, "name", "")
+                                if name:
+                                    adapter._update_status(f"子任务: {name} ✓")
                         continue
 
                     if not isinstance(data, tuple) or len(data) != 2:
@@ -334,6 +370,13 @@ async def execute_task_textual(
                                 tool_msg.set_error(output_str or "Error")
                             # Clean up - remove from tracking dict after status update
                             del adapter._current_tool_messages[tool_id]
+
+                            # Log tool result
+                            log_tool(
+                                tool_name,
+                                result=output_str[:2000] if output_str else None,
+                                status=tool_status,
+                            )
 
                         # Show shell errors
                         if tool_name == "shell" and tool_status != "success":
@@ -411,6 +454,9 @@ async def execute_task_textual(
                                 # (uses MarkdownStream internally for better performance)
                                 await current_msg.append_content(text)
 
+                                # Throttled scroll to follow streaming content
+                                adapter._throttled_scroll()
+
                         elif block_type in ("tool_call_chunk", "tool_call"):
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
@@ -487,6 +533,9 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
+
+                                # Log tool call
+                                log_tool(buffer_name, args=parsed_args)
 
                             tool_call_buffers.pop(buffer_key, None)
                             display_str = format_tool_display(buffer_name, parsed_args)
@@ -713,3 +762,11 @@ async def _flush_assistant_text_ns(
     else:
         # Stop the stream to finalize the content
         await current_msg.stop_stream()
+
+    # Final scroll after stream completes to ensure last content is visible
+    if adapter._scroll_to_bottom:
+        adapter._scroll_to_bottom()
+
+    # Log the assistant response (only for main agent namespace)
+    if ns_key == ():
+        log_assistant(text)

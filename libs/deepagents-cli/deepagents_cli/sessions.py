@@ -10,7 +10,7 @@ import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rich.table import Table
 
-from deepagents_cli.config import COLORS, console
+from deepagents_cli.config import COLORS, console, settings
 
 # Patch aiosqlite.Connection to add is_alive() method required by langgraph-checkpoint>=2.1.0
 # See: https://github.com/langchain-ai/langgraph/issues/6583
@@ -35,8 +35,8 @@ def _format_timestamp(iso_timestamp: str | None) -> str:
 
 
 def get_db_path() -> Path:
-    """Get path to global database."""
-    db_dir = Path.home() / ".deepagents"
+    """Get path to project database."""
+    db_dir = settings.user_deepagents_dir
     db_dir.mkdir(parents=True, exist_ok=True)
     return db_dir / "sessions.db"
 

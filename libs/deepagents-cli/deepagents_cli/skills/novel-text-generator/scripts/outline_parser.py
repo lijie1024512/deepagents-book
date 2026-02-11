@@ -74,7 +74,9 @@ def parse_plot_points(text: str) -> list[PlotPoint]:
                 # 检查是否有【小标题】
                 match = re.match(r"【([^】]+)】\s*(.+)", line)
                 if match:
-                    plot_points.append(PlotPoint(title=match.group(1).strip(), description=match.group(2).strip()))
+                    plot_points.append(
+                        PlotPoint(title=match.group(1).strip(), description=match.group(2).strip())
+                    )
                 else:
                     # 没有小标题，使用描述的前几个字作为标题
                     short_title = line[:10] + "..." if len(line) > 10 else line
@@ -113,7 +115,9 @@ def parse_chapter(text: str, chapter_number: int) -> ChapterInfo | None:
 
     # 解析章节概述
     summary = ""
-    summary_match = re.search(r"\*\*章节概述\*\*[：:]\s*(.+?)(?=\*\*|\n\n|$)", chapter_text, re.DOTALL)
+    summary_match = re.search(
+        r"\*\*章节概述\*\*[：:]\s*(.+?)(?=\*\*|\n\n|$)", chapter_text, re.DOTALL
+    )
     if summary_match:
         summary = summary_match.group(1).strip()
 
@@ -125,7 +129,9 @@ def parse_chapter(text: str, chapter_number: int) -> ChapterInfo | None:
 
     # 解析情感变化
     emotional_arc = ""
-    emotion_match = re.search(r"\*\*情感变化\*\*[：:]\s*(.+?)(?=\*\*|\n\n|$)", chapter_text, re.DOTALL)
+    emotion_match = re.search(
+        r"\*\*情感变化\*\*[：:]\s*(.+?)(?=\*\*|\n\n|$)", chapter_text, re.DOTALL
+    )
     if emotion_match:
         emotional_arc = emotion_match.group(1).strip()
 
@@ -207,7 +213,9 @@ def parse_volume(text: str, volume_number: int) -> VolumeInfo | None:
 
     # 解析关键事件
     key_events = []
-    events_match = re.search(r"\*\*关键事件\*\*[：:]?\s*\n(.+?)(?=\*\*|###|$)", volume_text, re.DOTALL)
+    events_match = re.search(
+        r"\*\*关键事件\*\*[：:]?\s*\n(.+?)(?=\*\*|###|$)", volume_text, re.DOTALL
+    )
     if events_match:
         events_text = events_match.group(1)
         for line in events_text.strip().split("\n"):

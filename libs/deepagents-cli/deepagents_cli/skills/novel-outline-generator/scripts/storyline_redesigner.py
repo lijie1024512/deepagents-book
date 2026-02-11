@@ -31,7 +31,7 @@ class StorylineRedesigner:
         self.requirement = requirement
 
         # 读取输入文件
-        with open(self.input_file, 'r', encoding='utf-8') as f:
+        with open(self.input_file, "r", encoding="utf-8") as f:
             self.content = f.read()
 
         # 解析大纲
@@ -44,8 +44,8 @@ class StorylineRedesigner:
         """解析大纲"""
         # 使用正则表达式匹配章节
         chapter_pattern = re.compile(
-            r'### 第(\d+)章：《(.+?)》\n\n\*\*章节概述\*\*:(.+?)\n\n\*\*情节点\*\*:(.+?)\n\n\*\*情感变化\*\*:(.+?)\n\n\*\*爽点\*\*:(.+?)\n\n\*\*钩子\*\*:(.+?)\n\n\*\*伏笔\*\*:(.+?)(?=\n\n### 第\d+章|\Z)',
-            re.DOTALL
+            r"### 第(\d+)章：《(.+?)》\n\n\*\*章节概述\*\*:(.+?)\n\n\*\*情节点\*\*:(.+?)\n\n\*\*情感变化\*\*:(.+?)\n\n\*\*爽点\*\*:(.+?)\n\n\*\*钩子\*\*:(.+?)\n\n\*\*伏笔\*\*:(.+?)(?=\n\n### 第\d+章|\Z)",
+            re.DOTALL,
         )
 
         chapters = {}
@@ -60,37 +60,37 @@ class StorylineRedesigner:
             foreshadowings = match.group(8).strip()
 
             chapters[chapter_num] = {
-                'title': chapter_title,
-                'overview': chapter_overview,
-                'plot_points': plot_points,
-                'emotion_change': emotion_change,
-                'highlights': highlights,
-                'hooks': hooks,
-                'foreshadowings': foreshadowings,
+                "title": chapter_title,
+                "overview": chapter_overview,
+                "plot_points": plot_points,
+                "emotion_change": emotion_change,
+                "highlights": highlights,
+                "hooks": hooks,
+                "foreshadowings": foreshadowings,
             }
 
         return chapters
 
     def _parse_scope(self):
         """解析重新设计范围"""
-        if self.scope.startswith('volume'):
+        if self.scope.startswith("volume"):
             # 整卷重新设计，如 volume2
-            volume_num = int(self.scope.replace('volume', ''))
+            volume_num = int(self.scope.replace("volume", ""))
             # 假设每卷20章
             start_chapter = (volume_num - 1) * 20 + 1
             end_chapter = volume_num * 20
-            return ('volume', start_chapter, end_chapter)
+            return ("volume", start_chapter, end_chapter)
 
-        elif self.scope.startswith('chapters'):
+        elif self.scope.startswith("chapters"):
             # 章节范围重新设计，如 chapters 10-20
-            range_part = self.scope.replace('chapters', '').strip()
-            start, end = map(int, range_part.split('-'))
-            return ('chapters', start, end)
+            range_part = self.scope.replace("chapters", "").strip()
+            start, end = map(int, range_part.split("-"))
+            return ("chapters", start, end)
 
-        elif self.scope.startswith('chapter'):
+        elif self.scope.startswith("chapter"):
             # 单章节重新设计，如 chapter 11
-            chapter_num = int(self.scope.replace('chapter', '').strip())
-            return ('chapter', chapter_num, chapter_num)
+            chapter_num = int(self.scope.replace("chapter", "").strip())
+            return ("chapter", chapter_num, chapter_num)
 
         else:
             raise ValueError(f"无效的重新设计范围：{self.scope}")
@@ -103,9 +103,9 @@ class StorylineRedesigner:
             当前状态字典：角色状态、情节走向、伏笔设置
         """
         current_state = {
-            'characters': {},  # 角色状态
-            'plot': [],        # 情节走向
-            'foreshadowings': [],  # 伏笔设置
+            "characters": {},  # 角色状态
+            "plot": [],  # 情节走向
+            "foreshadowings": [],  # 伏笔设置
         }
 
         # 提取前一章的状态（如果有）
@@ -115,16 +115,18 @@ class StorylineRedesigner:
                 chapter_data = self.outline[previous_chapter]
 
                 # 提取角色状态
-                character_pattern = re.compile(r'(李寒|索隆|乌索普|山治|娜美|老鼠|蒙卡|鹰眼)(.+?)(?=(李寒|索隆|乌索普|山治|娜美|老鼠|蒙卡|鹰眼)|$)')
-                for match in character_pattern.finditer(chapter_data['overview']):
+                character_pattern = re.compile(
+                    r"(李寒|索隆|乌索普|山治|娜美|老鼠|蒙卡|鹰眼)(.+?)(?=(李寒|索隆|乌索普|山治|娜美|老鼠|蒙卡|鹰眼)|$)"
+                )
+                for match in character_pattern.finditer(chapter_data["overview"]):
                     character = match.group(1)
                     state = match.group(2)
-                    current_state['characters'][character] = state
+                    current_state["characters"][character] = state
 
                 # 提取伏笔
-                foreshadowing_pattern = re.compile(r'\d+\. (.+)')
-                for match in foreshadowing_pattern.finditer(chapter_data['foreshadowings']):
-                    current_state['foreshadowings'].append(match.group(1))
+                foreshadowing_pattern = re.compile(r"\d+\. (.+)")
+                for match in foreshadowing_pattern.finditer(chapter_data["foreshadowings"]):
+                    current_state["foreshadowings"].append(match.group(1))
 
         return current_state
 
@@ -139,19 +141,19 @@ class StorylineRedesigner:
             连贯性报告
         """
         report = {
-            'character_consistency': True,
-            'plot_consistency': True,
-            'foreshadowing_consistency': True,
-            'issues': [],
+            "character_consistency": True,
+            "plot_consistency": True,
+            "foreshadowing_consistency": True,
+            "issues": [],
         }
 
         # 检查角色连贯性
         current_state = self.analyze_current_state()
 
         # 检查李寒的状态
-        if '李寒' in current_state['characters']:
+        if "李寒" in current_state["characters"]:
             # 检查新大纲中李寒的状态是否一致
-            lihan_pattern = re.compile(r'李寒(.+?)(?=(索隆|乌索普|山治|娜美|老鼠|蒙卡|鹰眼)|$)')
+            lihan_pattern = re.compile(r"李寒(.+?)(?=(索隆|乌索普|山治|娜美|老鼠|蒙卡|鹰眼)|$)")
             for match in lihan_pattern.finditer(new_content):
                 lihan_state = match.group(1)
                 # 这里应该检查状态是否合理，简化处理
@@ -184,14 +186,14 @@ class StorylineRedesigner:
 ### 角色状态
 """
 
-        for character, state in current_state['characters'].items():
+        for character, state in current_state["characters"].items():
             guide += f"- **{character}**: {state}\n"
 
         guide += """
 ### 已设置的伏笔
 """
 
-        for foreshadowing in current_state['foreshadowings']:
+        for foreshadowing in current_state["foreshadowings"]:
             guide += f"- {foreshadowing}\n"
 
         guide += """
@@ -334,7 +336,7 @@ class StorylineRedesigner:
 
         # 保存指导文件
         guide_file = self.output_file.parent / f"{self.output_file.stem}-指导.md"
-        with open(guide_file, 'w', encoding='utf-8') as f:
+        with open(guide_file, "w", encoding="utf-8") as f:
             f.write(guide)
 
         # 注意：实际的重新设计需要智能体根据指导完成
@@ -348,11 +350,13 @@ def main():
     """主函数"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='故事线重新设计器')
-    parser.add_argument('--input', required=True, help='输入文件路径')
-    parser.add_argument('--scope', required=True, help='重新设计范围（volume2/chapters 10-20/chapter 11）')
-    parser.add_argument('--requirement', required=True, help='重新设计需求')
-    parser.add_argument('--output', required=True, help='输出文件路径')
+    parser = argparse.ArgumentParser(description="故事线重新设计器")
+    parser.add_argument("--input", required=True, help="输入文件路径")
+    parser.add_argument(
+        "--scope", required=True, help="重新设计范围（volume2/chapters 10-20/chapter 11）"
+    )
+    parser.add_argument("--requirement", required=True, help="重新设计需求")
+    parser.add_argument("--output", required=True, help="输出文件路径")
 
     args = parser.parse_args()
 
@@ -360,11 +364,11 @@ def main():
         input_file=args.input,
         scope=args.scope,
         requirement=args.requirement,
-        output_file=args.output
+        output_file=args.output,
     )
 
     redesigner.redesign()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

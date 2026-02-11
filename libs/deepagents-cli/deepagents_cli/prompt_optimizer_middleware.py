@@ -1,4 +1,13 @@
-"""Middleware for automatically optimizing user prompts using prompt-optimizer skill."""
+"""Middleware for automatically optimizing user prompts using prompt-optimizer skill.
+
+触发机制:
+1. 显式标记模式（推荐）：用户在消息开头添加 @优化 或 @opt 标记
+   示例: "@优化 帮我写个海贼王同人小说"
+2. 关键词触发模式（可选）：检测消息中的关键词自动触发
+3. 全局模式（可选）：对所有消息都触发优化
+
+默认只启用显式标记模式，避免不必要的优化干扰。
+"""
 
 from __future__ import annotations
 
@@ -15,7 +24,16 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Overwrite
 
-# 触发优化的关键词（如果用户输入包含这些词，自动触发优化）
+# 触发优化的显式标记（推荐方式）
+OPTIMIZATION_MARKERS = [
+    "@优化",
+    "@opt",
+    "@optimize",
+    "/优化",
+    "/opt",
+]
+
+# 触发优化的关键词（仅在 auto_optimize=True 时生效）
 OPTIMIZATION_TRIGGER_KEYWORDS = [
     "小说",
     "网文",
@@ -30,7 +48,13 @@ OPTIMIZATION_TRIGGER_KEYWORDS = [
 
 
 class PromptOptimizerMiddleware(AgentMiddleware):
-    """Middleware that automatically optimizes user prompts using prompt-optimizer skill.
+    """Middleware that optimizes user prompts using prompt-optimizer skill.
+
+    触发方式:
+    1. 显式标记（默认启用）: 用户在消息开头使用 @优化、@opt 等标记
+       示例: "@优化 帮我写个海贼王同人小说"
+    2. 关键词触发（默认禁用）: 检测消息中的小说/创作等关键词
+    3. 全局触发（默认禁用）: 对所有消息都触发优化
 
     This middleware:
     1. Detects if the latest user message should be optimized
@@ -38,20 +62,60 @@ class PromptOptimizerMiddleware(AgentMiddleware):
     3. Ensures the optimized prompt is used for subsequent operations (like write_todos)
     """
 
-    def __init__(self, auto_optimize: bool = True, skill_name: str = "prompt-optimizer", always_optimize: bool = False):
+    def __init__(
+        self,
+        auto_optimize: bool = False,  # 改为默认关闭关键词触发
+        skill_name: str = "prompt-optimizer",
+        always_optimize: bool = False,
+        marker_mode: bool = True,  # 新增：显式标记模式（默认开启）
+    ):
         """Initialize the PromptOptimizerMiddleware.
 
         Args:
             auto_optimize: If True, automatically optimize prompts containing trigger keywords.
-                          If False, only optimize when explicitly requested.
+                          If False, only optimize when explicitly requested. Default: False.
             skill_name: Name of the prompt-optimizer skill to use.
             always_optimize: If True, always optimize every user input (ignores trigger keywords).
-                          If False, uses trigger keywords or explicit requests.
+                          If False, uses trigger keywords or explicit requests. Default: False.
+            marker_mode: If True, only optimize when user uses explicit markers like @优化.
+                        This is the recommended mode. Default: True.
         """
         super().__init__()
         self.auto_optimize = auto_optimize
         self.skill_name = skill_name
         self.always_optimize = always_optimize
+        self.marker_mode = marker_mode
+
+    def _has_optimization_marker(self, user_message: str) -> bool:
+        """Check if user message starts with an optimization marker.
+
+        Args:
+            user_message: The user's message content.
+
+        Returns:
+            True if the message has an optimization marker, False otherwise.
+        """
+        message_lower = user_message.lower().strip()
+        return any(message_lower.startswith(marker.lower()) for marker in OPTIMIZATION_MARKERS)
+
+    def _remove_marker(self, user_message: str) -> str:
+        """Remove the optimization marker from the message.
+
+        Args:
+            user_message: The user's message content.
+
+        Returns:
+            Message with marker removed.
+        """
+        message_stripped = user_message.strip()
+        message_lower = message_stripped.lower()
+
+        for marker in OPTIMIZATION_MARKERS:
+            if message_lower.startswith(marker.lower()):
+                # 移除标记和后面的空格
+                return message_stripped[len(marker) :].lstrip()
+
+        return user_message
 
     def _should_optimize(self, user_message: str) -> bool:
         """Determine if the user message should be optimized.
@@ -69,15 +133,18 @@ class PromptOptimizerMiddleware(AgentMiddleware):
         if self.always_optimize:
             return True
 
-        # 如果用户明确要求优化，总是优化
-        if any(keyword in user_message.lower() for keyword in ["优化", "改进", "optimize", "improve"]):
+        # 显式标记模式（推荐）：检查是否有优化标记
+        if self.marker_mode and self._has_optimization_marker(user_message):
             return True
+
+        # 如果只启用标记模式，不检查关键词
+        if self.marker_mode and not self.auto_optimize:
+            return False
 
         # 如果启用了自动优化，检查是否包含触发关键词
         if self.auto_optimize:
             return any(
-                keyword.lower() in user_message.lower()
-                for keyword in OPTIMIZATION_TRIGGER_KEYWORDS
+                keyword.lower() in user_message.lower() for keyword in OPTIMIZATION_TRIGGER_KEYWORDS
             )
 
         return False
@@ -128,6 +195,10 @@ class PromptOptimizerMiddleware(AgentMiddleware):
         # 检查是否应该优化
         if not self._should_optimize(user_message):
             return None
+
+        # 如果使用标记模式，移除标记以获取实际要优化的内容
+        if self.marker_mode and self._has_optimization_marker(user_message):
+            user_message = self._remove_marker(user_message)
 
         # 检查是否已经优化过（避免重复优化）
         messages = state.get("messages", [])
@@ -220,4 +291,3 @@ class PromptOptimizerMiddleware(AgentMiddleware):
 
 
 __all__ = ["PromptOptimizerMiddleware"]
-

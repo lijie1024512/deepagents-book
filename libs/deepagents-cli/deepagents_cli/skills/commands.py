@@ -137,7 +137,7 @@ def _list(agent: str, *, project: bool = False) -> None:
         if not skills:
             console.print("[yellow]No skills found.[/yellow]")
             console.print(
-                "[dim]Skills will be created in ~/.deepagents/agent/skills/ when you add them.[/dim]",
+                f"[dim]Skills will be created in {settings.get_user_skills_dir(agent)}/ when you add them.[/dim]",
                 style=COLORS["dim"],
             )
             console.print(
@@ -319,7 +319,7 @@ This skill directory can include supporting files referenced in the instructions
         "   - web-research: Structured research workflow\n"
         "   - langgraph-docs: LangGraph documentation lookup\n"
         "\n"
-        "   Copy an example: cp -r examples/skills/web-research ~/.deepagents/agent/skills/\n",
+        f"   Copy an example: cp -r examples/skills/web-research {settings.get_user_skills_dir(agent)}/\n",
         style=COLORS["dim"],
     )
 

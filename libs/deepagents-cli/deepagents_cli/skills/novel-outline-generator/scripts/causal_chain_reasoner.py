@@ -36,11 +36,7 @@ class CausalChainReasoner:
             knowledge_base_file: 知识库文件路径（如onepiece_knowledge_base.md）
         """
         self.kb_file = Path(knowledge_base_file)
-        self.world_state = {
-            "characters": {},
-            "factions": {},
-            "locations": {}
-        }
+        self.world_state = {"characters": {}, "factions": {}, "locations": {}}
         self.state_dependencies = {}  # 状态依赖图
         self.changed_events = []
         self.branches = []
@@ -73,7 +69,7 @@ class CausalChainReasoner:
             "change_type": change_type,
             "granularity": granularity,
             "target": target,
-            "original_input": user_input
+            "original_input": user_input,
         }
 
     def _detect_change_type(self, user_input: str) -> str:
@@ -102,8 +98,23 @@ class CausalChainReasoner:
 
     def _detect_target(self, user_input: str) -> Optional[str]:
         """检测改变对象"""
-        characters = ["路飞", "索隆", "娜美", "乌索普", "山治", "乔巴", "罗宾",
-                      "弗兰奇", "布鲁克", "甚平", "艾斯", "萨博", "克洛", "克利", "鹰眼"]
+        characters = [
+            "路飞",
+            "索隆",
+            "娜美",
+            "乌索普",
+            "山治",
+            "乔巴",
+            "罗宾",
+            "弗兰奇",
+            "布鲁克",
+            "甚平",
+            "艾斯",
+            "萨博",
+            "克洛",
+            "克利",
+            "鹰眼",
+        ]
 
         for char in characters:
             if char in user_input:
@@ -123,7 +134,7 @@ class CausalChainReasoner:
     def _load_from_knowledge_base(self):
         """从知识库加载状态依赖"""
         try:
-            with open(self.kb_file, 'r', encoding='utf-8') as f:
+            with open(self.kb_file, "r", encoding="utf-8") as f:
                 content = f.read()
 
             # 解析角色状态
@@ -151,7 +162,7 @@ class CausalChainReasoner:
                 "captured_by": None,
                 "location": "谢尔兹镇",
                 "goal": "成为世界第一剑士",
-                "stubborn": True  # 目标坚定
+                "stubborn": True,  # 目标坚定
             }
 
         # 解析娜美
@@ -160,7 +171,7 @@ class CausalChainReasoner:
                 "status": "橘子镇",
                 "captured_by": None,
                 "goal": "收集100亿贝利",
-                "skills": ["航海术", "情报分析"]
+                "skills": ["航海术", "情报分析"],
             }
 
         # 解析乌索普
@@ -169,7 +180,7 @@ class CausalChainReasoner:
                 "status": "西罗布村",
                 "captured_by": None,
                 "goal": "成为勇敢的海上战士",
-                "skills": ["狙击", "诡计"]
+                "skills": ["狙击", "诡计"],
             }
 
         # 解析山治
@@ -178,7 +189,7 @@ class CausalChainReasoner:
                 "status": "巴拉蒂",
                 "captured_by": None,
                 "goal": "寻找ALL BLUE",
-                "skills": ["料理", "踢技"]
+                "skills": ["料理", "踢技"],
             }
 
         # 解析路飞
@@ -190,7 +201,7 @@ class CausalChainReasoner:
             "has_navigator": False,
             "has_sniper": False,
             "goal": "成为海贼王",
-            "trait": "世界之子"  # 有特殊命运
+            "trait": "世界之子",  # 有特殊命运
         }
 
         self.world_state["characters"] = character_states
@@ -202,36 +213,24 @@ class CausalChainReasoner:
         # 简化处理：解析原作事件中的状态依赖
         # 索隆加入路飞的状态依赖
         dependencies["zoro_join_luffy"] = {
-            "prerequisites": {
-                "zoro.captured_by": None,
-                "morgans.alive": False
-            },
-            "consequences": {
-                "luffy.has_swordsman": True,
-                "zoro.from": "luffy"
-            },
+            "prerequisites": {"zoro.captured_by": None, "morgans.alive": False},
+            "consequences": {"luffy.has_swordsman": True, "zoro.from": "luffy"},
             "chain_reactions": [
                 "路飞在巴拉蒂对抗克利克时，有近战支援",
                 "路飞在可可亚西村对抗阿龙时，有近战支援",
-                "索隆成为路飞团队的核心战力"
-            ]
+                "索隆成为路飞团队的核心战力",
+            ],
         }
 
         # 娜美加入路飞的状态依赖
         dependencies["nami_join_luffy"] = {
-            "prerequisites": {
-                "nami.captured_by": None,
-                "arlong.alive": False
-            },
-            "consequences": {
-                "luffy.has_navigator": True,
-                "nami.from": "luffy"
-            },
+            "prerequisites": {"nami.captured_by": None, "arlong.alive": False},
+            "consequences": {"luffy.has_navigator": True, "nami.from": "luffy"},
             "chain_reactions": [
                 "路飞可以正常航行（娜美航海术）",
                 "路飞可以获得各种情报（娜美情报能力）",
-                "阿龙公园被消灭，可可亚西村解放"
-            ]
+                "阿龙公园被消灭，可可亚西村解放",
+            ],
         }
 
         self.state_dependencies = dependencies
@@ -242,31 +241,23 @@ class CausalChainReasoner:
             "character_replacement": {
                 "description": "原作角色无法正常加入，世界安排替代者",
                 "intensity": "中",
-                "examples": [
-                    "索隆被李寒收服 → 世界安排克洛加入路飞"
-                ]
+                "examples": ["索隆被李寒收服 → 世界安排克洛加入路飞"],
             },
             "plot_compensation": {
                 "description": "原作情节无法正常发生，世界安排替代情节",
                 "intensity": "强",
-                "examples": [
-                    "路飞无法到达可可亚西村 → 世界安排路飞在其他地方遇到类似事件"
-                ]
+                "examples": ["路飞无法到达可可亚西村 → 世界安排路飞在其他地方遇到类似事件"],
             },
             "luck_boost": {
                 "description": "路飞遇到困难时，世界暗中帮助",
                 "intensity": "弱",
-                "examples": [
-                    "路飞在巴拉蒂对抗克利克时，缺少近战支援 → 世界安排克利克突然失误"
-                ]
+                "examples": ["路飞在巴拉蒂对抗克利克时，缺少近战支援 → 世界安排克利克突然失误"],
             },
             "behavior_guidance": {
                 "description": "世界影响角色的潜意识，让他们无意中符合原作走向",
                 "intensity": "弱",
-                "examples": [
-                    "索隆被李寒收服后，潜意识里仍想成为世界第一剑士 → 偶尔挑战路飞"
-                ]
-            }
+                "examples": ["索隆被李寒收服后，潜意识里仍想成为世界第一剑士 → 偶尔挑战路飞"],
+            },
         }
         self.world_corrections = corrections
 
@@ -280,40 +271,18 @@ class CausalChainReasoner:
                     "has_swordsman": False,
                     "has_cook": False,
                     "has_navigator": False,
-                    "has_sniper": False
+                    "has_sniper": False,
                 },
-                "zoro": {
-                    "status": "谢尔兹镇",
-                    "captured_by": None,
-                    "location": "谢尔兹镇"
-                },
-                "nami": {
-                    "status": "橘子镇",
-                    "captured_by": None
-                },
-                "usopp": {
-                    "status": "西罗布村",
-                    "captured_by": None
-                },
-                "sanji": {
-                    "status": "巴拉蒂",
-                    "captured_by": None
-                }
+                "zoro": {"status": "谢尔兹镇", "captured_by": None, "location": "谢尔兹镇"},
+                "nami": {"status": "橘子镇", "captured_by": None},
+                "usopp": {"status": "西罗布村", "captured_by": None},
+                "sanji": {"status": "巴拉蒂", "captured_by": None},
             },
             "factions": {
-                "arlong_pirates": {
-                    "status": "活跃",
-                    "controlled_by": None
-                },
-                "black_cat_pirates": {
-                    "status": "活跃",
-                    "controlled_by": None
-                },
-                "krieg_pirates": {
-                    "status": "活跃",
-                    "controlled_by": None
-                }
-            }
+                "arlong_pirates": {"status": "活跃", "controlled_by": None},
+                "black_cat_pirates": {"status": "活跃", "controlled_by": None},
+                "krieg_pirates": {"status": "活跃", "controlled_by": None},
+            },
         }
 
     def apply_change(self, change_type: str, target: str) -> Dict:
@@ -334,24 +303,13 @@ class CausalChainReasoner:
         self._update_world_state(change_type, target)
 
         # 记录改变事件
-        self.changed_events.append({
-            "type": change_type,
-            "target": target,
-            "impact": direct_impact
-        })
+        self.changed_events.append({"type": change_type, "target": target, "impact": direct_impact})
 
-        return {
-            "new_state": self.world_state,
-            "direct_impact": direct_impact
-        }
+        return {"new_state": self.world_state, "direct_impact": direct_impact}
 
     def _calculate_direct_impact(self, change_type: str, target: str) -> Dict:
         """计算改变的直接影响"""
-        impact = {
-            "changed_objects": [],
-            "affected_events": [],
-            "broken_dependencies": []
-        }
+        impact = {"changed_objects": [], "affected_events": [], "broken_dependencies": []}
 
         if change_type == "recruit_character":
             if target == "索隆":
@@ -423,10 +381,7 @@ class CausalChainReasoner:
             if not current_layer:
                 break
 
-            chain_reactions.append({
-                "layer": i + 1,
-                "reactions": current_layer
-            })
+            chain_reactions.append({"layer": i + 1, "reactions": current_layer})
 
             # 生成下一层
             next_layer = self._generate_next_layer(current_layer)
@@ -483,8 +438,9 @@ class CausalChainReasoner:
 
         return next_layer
 
-    def generate_branches(self, change_type: str, target: str,
-                         chain_reactions: List[Dict]) -> List[Dict]:
+    def generate_branches(
+        self, change_type: str, target: str, chain_reactions: List[Dict]
+    ) -> List[Dict]:
         """
         生成剧情分支（改进：动态生成分支，根据场景生成合理的分支）
 
@@ -526,14 +482,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "人物替代",
                 "intensity": "中",
-                "description": "世界安排克洛替代索隆，加入路飞"
+                "description": "世界安排克洛替代索隆，加入路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得索隆，索隆实力强，目标坚定",
             "timeline": self._generate_timeline("recruit_zoro_success"),
             "success_rate": self._calculate_success_rate("recruit_zoro_success"),
             "risks": self._analyze_risks("recruit_zoro_success"),
-            "benefits": self._analyze_benefits("recruit_zoro_success")
+            "benefits": self._analyze_benefits("recruit_zoro_success"),
         }
 
     def _generate_branch_recruit_zoro_help_luffy(self, chain_reactions: List[Dict]) -> Dict:
@@ -546,14 +502,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "人物替代",
                 "intensity": "中",
-                "description": "世界安排泰格利替代索隆，加入路飞"
+                "description": "世界安排泰格利替代索隆，加入路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得索隆，同时不影响路飞战力",
             "timeline": self._generate_timeline("recruit_zoro_help"),
             "success_rate": self._calculate_success_rate("recruit_zoro_help"),
             "risks": self._analyze_risks("recruit_zoro_help"),
-            "benefits": self._analyze_benefits("recruit_zoro_help")
+            "benefits": self._analyze_benefits("recruit_zoro_help"),
         }
 
     def _generate_branch_recruit_zoro_hinder_luffy(self, chain_reactions: List[Dict]) -> Dict:
@@ -566,14 +522,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "情节补偿",
                 "intensity": "强",
-                "description": "世界让路飞获得其他能力，如霸气或果实"
+                "description": "世界让路飞获得其他能力，如霸气或果实",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "完全削弱路飞，同时获得索隆",
             "timeline": self._generate_timeline("recruit_zoro_hinder"),
             "success_rate": self._calculate_success_rate("recruit_zoro_hinder"),
             "risks": self._analyze_risks("recruit_zoro_hinder"),
-            "benefits": self._analyze_benefits("recruit_zoro_hinder")
+            "benefits": self._analyze_benefits("recruit_zoro_hinder"),
         }
 
     def _generate_branch_recruit_nami_success(self, chain_reactions: List[Dict]) -> Dict:
@@ -586,14 +542,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "运气加持",
                 "intensity": "弱",
-                "description": "世界安排临时航海士帮助路飞"
+                "description": "世界安排临时航海士帮助路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得娜美，航海术和情报能力强",
             "timeline": self._generate_timeline("recruit_nami_success"),
             "success_rate": self._calculate_success_rate("recruit_nami_success"),
             "risks": self._analyze_risks("recruit_nami_success"),
-            "benefits": self._analyze_benefits("recruit_nami_success")
+            "benefits": self._analyze_benefits("recruit_nami_success"),
         }
 
     def _generate_branch_recruit_nami_help_luffy(self, chain_reactions: List[Dict]) -> Dict:
@@ -606,14 +562,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "人物替代",
                 "intensity": "中",
-                "description": "世界安排科加斯替代娜美，加入路飞"
+                "description": "世界安排科加斯替代娜美，加入路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得娜美，同时不影响路飞航海",
             "timeline": self._generate_timeline("recruit_nami_help"),
             "success_rate": self._calculate_success_rate("recruit_nami_help"),
             "risks": self._analyze_risks("recruit_nami_help"),
-            "benefits": self._analyze_benefits("recruit_nami_help")
+            "benefits": self._analyze_benefits("recruit_nami_help"),
         }
 
     def _generate_branch_recruit_usopp_success(self, chain_reactions: List[Dict]) -> Dict:
@@ -626,14 +582,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "人物替代",
                 "intensity": "中",
-                "description": "世界安排新的狙击手替代乌索普，加入路飞"
+                "description": "世界安排新的狙击手替代乌索普，加入路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得乌索普，狙击和诡计能力强",
             "timeline": self._generate_timeline("recruit_usopp_success"),
             "success_rate": self._calculate_success_rate("recruit_usopp_success"),
             "risks": self._analyze_risks("recruit_usopp_success"),
-            "benefits": self._analyze_benefits("recruit_usopp_success")
+            "benefits": self._analyze_benefits("recruit_usopp_success"),
         }
 
     def _generate_branch_recruit_usopp_help_luffy(self, chain_reactions: List[Dict]) -> Dict:
@@ -646,14 +602,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "人物替代",
                 "intensity": "中",
-                "description": "世界安排耶稣布替代乌索普，加入路飞"
+                "description": "世界安排耶稣布替代乌索普，加入路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得乌索普，同时不影响路飞远程攻击",
             "timeline": self._generate_timeline("recruit_usopp_help"),
             "success_rate": self._calculate_success_rate("recruit_usopp_help"),
             "risks": self._analyze_risks("recruit_usopp_help"),
-            "benefits": self._analyze_benefits("recruit_usopp_help")
+            "benefits": self._analyze_benefits("recruit_usopp_help"),
         }
 
     def _generate_branch_recruit_sanji_success(self, chain_reactions: List[Dict]) -> Dict:
@@ -666,14 +622,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "人物替代",
                 "intensity": "中",
-                "description": "世界安排厨师替代山治，加入路飞"
+                "description": "世界安排厨师替代山治，加入路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得山治，料理和踢技能力强",
             "timeline": self._generate_timeline("recruit_sanji_success"),
             "success_rate": self._calculate_success_rate("recruit_sanji_success"),
             "risks": self._analyze_risks("recruit_sanji_success"),
-            "benefits": self._analyze_benefits("recruit_sanji_success")
+            "benefits": self._analyze_benefits("recruit_sanji_success"),
         }
 
     def _generate_branch_recruit_sanji_help_luffy(self, chain_reactions: List[Dict]) -> Dict:
@@ -686,14 +642,14 @@ class CausalChainReasoner:
             "world_correction": {
                 "type": "人物替代",
                 "intensity": "中",
-                "description": "世界安排巴拉蒂厨师替代山治，加入路飞"
+                "description": "世界安排巴拉蒂厨师替代山治，加入路飞",
             },
             "butterfly_effects": self._extract_butterfly_effects(chain_reactions),
             "main_benefit": "获得山治，同时不影响路飞饮食",
             "timeline": self._generate_timeline("recruit_sanji_help"),
             "success_rate": self._calculate_success_rate("recruit_sanji_help"),
             "risks": self._analyze_risks("recruit_sanji_help"),
-            "benefits": self._analyze_benefits("recruit_sanji_help")
+            "benefits": self._analyze_benefits("recruit_sanji_help"),
         }
 
     def _extract_butterfly_effects(self, chain_reactions: List[Dict]) -> List[str]:
@@ -776,11 +732,7 @@ class CausalChainReasoner:
         if self.protagonist_power > 100:
             reasons.append("主角实力强，提升成功率")
 
-        return {
-            "rate": int(base_rate * 100),
-            "difficulty": difficulty,
-            "reasons": reasons
-        }
+        return {"rate": int(base_rate * 100), "difficulty": difficulty, "reasons": reasons}
 
     def _analyze_risks(self, branch_type: str) -> List[str]:
         """分析分支风险"""
@@ -923,10 +875,7 @@ class CausalChainReasoner:
         if not self._check_protagonist_behavior(branch):
             issues.append("主角行为违反核心原则")
 
-        return {
-            "passed": len(issues) == 0,
-            "issues": issues
-        }
+        return {"passed": len(issues) == 0, "issues": issues}
 
     def _check_character_behavior(self, branch: Dict) -> bool:
         """检查角色行为逻辑"""
@@ -975,7 +924,7 @@ class CausalChainReasoner:
         """
         report = ""
         report += "因果链动态推理报告（V2.0深度优化版）\n"
-        report += "="*80 + "\n\n"
+        report += "=" * 80 + "\n\n"
 
         # 改变事件
         report += "【改变事件】\n"
@@ -1077,18 +1026,14 @@ def main():
     print(f"推理连锁反应: {len(chain_reactions)}层")
 
     # 生成分支（改进：动态生成分支）
-    branches = reasoner.generate_branches(
-        demand["change_type"],
-        demand["target"],
-        chain_reactions
-    )
+    branches = reasoner.generate_branches(demand["change_type"], demand["target"], chain_reactions)
     print(f"生成分支: {len(branches)}个")
 
     # 生成报告
     report = reasoner.generate_report()
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print(report)
-    print("="*80)
+    print("=" * 80)
 
 
 if __name__ == "__main__":

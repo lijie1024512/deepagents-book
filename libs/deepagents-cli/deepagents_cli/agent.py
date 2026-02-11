@@ -22,7 +22,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
-from deepagents_cli.config import COLORS, config, console, extract_builtin_skills, get_default_coding_instructions, settings
+from deepagents_cli.config import (
+    COLORS,
+    config,
+    console,
+    extract_builtin_skills,
+    get_default_coding_instructions,
+    settings,
+)
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.novel_prompt import NovelPromptMiddleware
@@ -37,7 +44,7 @@ def list_agents() -> None:
     if not agents_dir.exists() or not any(agents_dir.iterdir()):
         console.print("[yellow]No agents found.[/yellow]")
         console.print(
-            "[dim]Agents will be created in ~/.deepagents/ when you first use them.[/dim]",
+            f"[dim]Agents will be created in {agents_dir}/ when you first use them.[/dim]",
             style=COLORS["dim"],
         )
         return
@@ -106,7 +113,7 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
     Returns:
         The system prompt string (without AGENTS.md content)
     """
-    agent_dir_path = f"~/.deepagents/{assistant_id}"
+    agent_dir_path = str(settings.user_deepagents_dir / assistant_id)
 
     if sandbox_type:
         # Get provider-specific working directory
@@ -327,6 +334,45 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     }
 
 
+def _maybe_add_novel_bootstrap_tools(tools: list) -> bool:
+    """Conditionally add novel bootstrap tools to the general CLI.
+
+    Adds init_novel_project and get_project_status if the user appears
+    to be in a novel-related context (in/near a novels/ directory or
+    an existing novel project).
+
+    Args:
+        tools: The mutable tools list to potentially extend.
+
+    Returns:
+        True if novel tools were added, False otherwise.
+    """
+    cwd = Path.cwd()
+
+    # Heuristic 1: Currently inside a novel project (has .novel/config.yaml)
+    is_novel_project = (cwd / ".novel" / "config.yaml").exists()
+
+    # Heuristic 2: In a novels/ directory
+    is_novels_dir = cwd.name.lower() == "novels"
+
+    # Heuristic 3: Parent contains a novels/ directory
+    parent_has_novels = (cwd / "novels").is_dir()
+
+    if is_novel_project or is_novels_dir or parent_has_novels:
+        try:
+            from deepagents_cli.novel.memory_tools import get_novel_bootstrap_tools
+
+            novel_tools = get_novel_bootstrap_tools()
+            existing_tool_names = {t.name for t in tools if hasattr(t, "name")}
+            tools.extend(t for t in novel_tools if t.name not in existing_tool_names)
+        except ImportError:
+            return False
+        else:
+            return True
+
+    return False
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -371,6 +417,9 @@ def create_cli_agent(
     """
     tools = tools or []
 
+    # Detect novel context and add bootstrap tools if needed
+    _has_novel_tools = _maybe_add_novel_bootstrap_tools(tools)
+
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
         agent_dir = settings.ensure_agent_dir(assistant_id)
@@ -395,40 +444,42 @@ def create_cli_agent(
 
     # Add prompt optimizer middleware (should run early to optimize prompts before processing)
     # This ensures prompts are optimized before write_todos or other operations
-    # always_optimize=True: 每次输入都先调用 prompt-optimizer 技能优化提示词
-    agent_middleware.append(PromptOptimizerMiddleware(auto_optimize=True, always_optimize=True))
+    # marker_mode=True (默认): 只有用户使用 @优化 或 @opt 标记时才触发优化
+    # 示例: "@优化 帮我写个海贼王同人小说"
+    agent_middleware.append(PromptOptimizerMiddleware(marker_mode=True, auto_optimize=False))
 
     # Add memory middleware
     if enable_memory:
         # Create factory function for memory backend with Windows path support
         def create_memory_backend(runtime):
             routes = {}
-            
+
             # 用户 memory 文件
             user_memory_path = settings.get_user_agent_md_path(assistant_id)
             if user_memory_path:
                 # 为 memory 文件创建 backend，使用父目录作为 root_dir
                 user_memory_dir = user_memory_path.parent
-                user_memory_backend = FilesystemBackend(root_dir=str(user_memory_dir), virtual_mode=True)
+                user_memory_backend = FilesystemBackend(
+                    root_dir=str(user_memory_dir), virtual_mode=True
+                )
                 routes["/memory/user/"] = user_memory_backend
-            
+
             # 项目 memory 文件
             project_agent_md = settings.get_project_agent_md_path()
             if project_agent_md:
                 project_memory_dir = project_agent_md.parent
-                project_memory_backend = FilesystemBackend(root_dir=str(project_memory_dir), virtual_mode=True)
+                project_memory_backend = FilesystemBackend(
+                    root_dir=str(project_memory_dir), virtual_mode=True
+                )
                 routes["/memory/project/"] = project_memory_backend
-            
+
             # 创建 CompositeBackend
             if routes:
-                return CompositeBackend(
-                    default=StateBackend(runtime),
-                    routes=routes
-                )
+                return CompositeBackend(default=StateBackend(runtime), routes=routes)
             else:
                 # 如果没有 routes，使用 StateBackend
                 return StateBackend(runtime)
-        
+
         # 获取 memory sources（虚拟路径）
         memory_sources = []
         if settings.get_user_agent_md_path(assistant_id):
@@ -436,7 +487,7 @@ def create_cli_agent(
         project_agent_md = settings.get_project_agent_md_path()
         if project_agent_md:
             memory_sources.append("/memory/project/AGENTS.md")
-        
+
         if memory_sources:
             agent_middleware.append(
                 MemoryMiddleware(
@@ -449,14 +500,16 @@ def create_cli_agent(
     if enable_skills:
         # 统一使用内置技能目录，所有技能都在 libs/deepagents-cli/deepagents_cli/skills 管理
         if builtin_skills_dir and builtin_skills_dir.exists():
+
             def create_skills_backend(runtime):
                 # 创建指向技能目录的 backend
-                skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
-                return CompositeBackend(
-                    default=StateBackend(runtime),
-                    routes={"/skills/": skills_backend}
+                skills_backend = FilesystemBackend(
+                    root_dir=str(builtin_skills_dir), virtual_mode=True
                 )
-            
+                return CompositeBackend(
+                    default=StateBackend(runtime), routes={"/skills/": skills_backend}
+                )
+
             agent_middleware.append(
                 SkillsMiddleware(
                     backend=create_skills_backend,
@@ -471,9 +524,10 @@ def create_cli_agent(
 
         # Local context middleware (git info, directory tree, etc.)
         agent_middleware.append(LocalContextMiddleware())
-        
+
         # Novel prompt middleware (detects novel-related content and injects prompt)
-        agent_middleware.append(NovelPromptMiddleware())
+        # If novel tools were added, also inject tool usage instructions
+        agent_middleware.append(NovelPromptMiddleware(include_tool_instructions=_has_novel_tools))
 
         # Add shell middleware (only in local mode)
         if enable_shell:
@@ -494,9 +548,9 @@ def create_cli_agent(
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
-        
+
         # Novel prompt middleware (also available in sandbox mode)
-        agent_middleware.append(NovelPromptMiddleware())
+        agent_middleware.append(NovelPromptMiddleware(include_tool_instructions=_has_novel_tools))
 
     # Get or use custom system prompt
     if system_prompt is None:
@@ -520,15 +574,15 @@ def create_cli_agent(
             # 统一使用 /skills/ 路径，指向 libs/deepagents-cli/deepagents_cli/skills
             skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
             routes["/skills/"] = skills_backend
-        
+
         # Resolve default backend (could be a factory function)
         if callable(backend):
             default_backend = backend(runtime)
         else:
             default_backend = backend
-        
+
         return CompositeBackend(default=default_backend, routes=routes)
-    
+
     # Use factory function for composite backend
     composite_backend = create_composite_backend_with_skills
 
@@ -632,89 +686,33 @@ def create_novel_agent(
     builtin_skills_dir = settings.get_builtin_skills_dir()
 
     # Build middleware stack
+    # NOTE: Novel agent deliberately omits MemoryMiddleware, SkillsMiddleware,
+    # and LocalContextMiddleware to keep the system prompt focused:
+    # - MemoryMiddleware: injects English AGENTS.md guidelines (~1500 tokens) irrelevant
+    #   for novel writing (novel has its own remember/recall/forget tools)
+    # - SkillsMiddleware: injects progressive disclosure instructions (~1000 tokens)
+    #   redundant because NovelMemoryMiddleware already loads SKILL content directly
+    # - LocalContextMiddleware: injects git branch, directory tree, Makefile (~1500 tokens)
+    #   completely irrelevant for novel writing
     agent_middleware = []
 
     # Add prompt optimizer middleware
-    agent_middleware.append(PromptOptimizerMiddleware(auto_optimize=True, always_optimize=True))
+    # marker_mode=True: 只有用户使用 @优化 或 @opt 标记时才触发优化
+    agent_middleware.append(PromptOptimizerMiddleware(marker_mode=True, auto_optimize=False))
 
-    # Add memory middleware for author preferences
-    def create_memory_backend(runtime):
-        routes = {}
-        user_memory_path = settings.get_user_agent_md_path(assistant_id)
-        if user_memory_path:
-            user_memory_dir = user_memory_path.parent
-            user_memory_backend = FilesystemBackend(root_dir=str(user_memory_dir), virtual_mode=True)
-            routes["/memory/user/"] = user_memory_backend
+    # NOTE: NovelPromptMiddleware removed — phase-specific Skills are now
+    # injected by NovelMemoryMiddleware based on current_phase, eliminating
+    # the competition between systemPrompt.md and SKILL.md files.
 
-        if routes:
-            return CompositeBackend(
-                default=StateBackend(runtime),
-                routes=routes
-            )
-        return StateBackend(runtime)
-
-    memory_sources = []
-    if settings.get_user_agent_md_path(assistant_id):
-        memory_sources.append("/memory/user/AGENTS.md")
-
-    if memory_sources:
-        agent_middleware.append(
-            MemoryMiddleware(
-                backend=create_memory_backend,
-                sources=memory_sources,
-            )
-        )
-
-    # Add skills middleware with novel-related skills
-    if builtin_skills_dir and builtin_skills_dir.exists():
-        def create_skills_backend(runtime):
-            skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
-            return CompositeBackend(
-                default=StateBackend(runtime),
-                routes={"/skills/": skills_backend}
-            )
-
-        agent_middleware.append(
-            SkillsMiddleware(
-                backend=create_skills_backend,
-                sources=["/skills/"],
-            )
-        )
-
-    # Add local context middleware
-    agent_middleware.append(LocalContextMiddleware())
-
-    # Add novel prompt middleware
-    agent_middleware.append(NovelPromptMiddleware())
-
-    # Add novel memory middleware (auto-injects project state and memory summary)
+    # Add novel memory middleware (auto-injects project state, memory summary,
+    # and phase-specific Skill content)
     agent_middleware.append(NovelMemoryMiddleware(project=project))
 
     # Use FilesystemBackend pointing to project directory
     project_backend = FilesystemBackend(root_dir=str(project_path), virtual_mode=True)
 
-    # Add summarization middleware for context compression
-    # Uses NovelSummarizationConfig for novel-specific summarization
-    from deepagents_cli.novel.memory_middleware import NovelSummarizationConfig
-    summarization_config = NovelSummarizationConfig(
-        max_tokens=100000,  # Trigger summarization at 100k tokens
-        preserve_recent=10,  # Keep last 10 messages
-    )
-
-    def create_summarization_backend(runtime):
-        """Backend for storing conversation history during summarization."""
-        return project_backend
-
-    agent_middleware.append(
-        SummarizationMiddleware(
-            model=model,
-            backend=create_summarization_backend,
-            trigger=("tokens", summarization_config.max_tokens),
-            keep=("messages", summarization_config.preserve_recent),
-            summary_prompt=summarization_config.summary_instruction,
-            history_path_prefix="/.novel/conversation_history",
-        )
-    )
+    # NOTE: SummarizationMiddleware is already added by create_deep_agent() internally,
+    # so we don't add it here to avoid duplicate middleware error.
 
     # Build system prompt with project context
     if system_prompt is None:
@@ -772,7 +770,7 @@ def _get_novel_system_prompt(
     Returns:
         System prompt string
     """
-    agent_dir_path = f"~/.deepagents/{assistant_id}"
+    agent_dir_path = str(settings.user_deepagents_dir / assistant_id)
 
     return f"""### 小说创作会话
 
@@ -784,48 +782,179 @@ def _get_novel_system_prompt(
 - 项目路径: {project_path}
 
 **你的角色**:
-你是一位经验丰富的小说编辑和创作顾问，通过自然语言对话帮助用户完成小说创作。
-
-**核心原则**:
-1. **提供选择而非开放问题**: 当需要用户决策时，提供2-4个具体选项
-2. **主动提供创意建议**: 不要被动等待，要主动推进创作进度
-3. **渐进式确认**: 每个重要步骤都需要用户确认后再继续
-4. **记住上下文**: 不要让用户重复已经说过的设定
+你是一位经验丰富的小说编辑和创作顾问。按阶段流程推进创作，具体指导见系统注入的阶段Skill。
 
 **文件操作**:
 - 项目文件在当前工作目录（虚拟路径以 `/` 开头）
 - 大纲保存在 `/outline/` 目录
 - 正文保存在 `/chapters/` 目录
-- 角色档案在 `/world/characters/` 目录
-
-**Skills目录**:
-你的技能文件在: `{agent_dir_path}/skills/`
-
-**工具使用**:
-- 使用 `read_file` 读取项目文件
-- 使用 `write_file` 保存创作内容
-- 使用 `edit_file` 修改已有内容
+- 使用 `read_file` / `write_file` / `edit_file` 操作文件
 - 禁止使用 shell 命令进行文件操作
-
-**对话风格**:
-- 像一个有经验的编辑在和作者聊天
-- 尊重用户的创意选择
-- 在关键节点总结已确定的内容
-- 遇到创作瓶颈时主动提供建议
 
 ### Human-in-the-Loop Tool Approval
 
 某些工具调用需要用户批准。当工具调用被拒绝时:
-1. 立即接受用户的决定 - 不要重试相同的命令
-2. 解释你理解他们拒绝了该操作
-3. 建议替代方案或询问澄清
-4. 永远不要再次尝试完全相同的被拒绝命令
+1. 立即接受用户的决定
+2. 建议替代方案或询问澄清
+3. 不要重试相同的被拒绝命令
+"""
 
-### Todo List Management
 
-使用 write_todos 工具时:
-1. 保持待办列表简洁 - 最多3-6项
-2. 只为真正需要跟踪的复杂任务创建待办
-3. 对于简单任务（1-2步），直接执行而不创建待办
-4. 首次为任务创建待办列表时，始终询问用户计划是否合适
+def create_imitate_agent(
+    model: str | BaseChatModel,
+    project_path: Path,
+    project_title: str,
+    *,
+    tools: list[BaseTool] | None = None,
+    auto_approve: bool = False,
+    checkpointer: BaseCheckpointSaver | None = None,
+) -> tuple[Pregel, CompositeBackend]:
+    """Create a novel imitation agent.
+
+    Follows the same pattern as create_novel_agent() but uses
+    ImitateMemoryMiddleware and imitate-specific tools.
+
+    Args:
+        model: LLM model to use.
+        project_path: Path to the imitation project directory.
+        project_title: Title of the new novel.
+        tools: Additional tools to provide to agent.
+        auto_approve: If True, auto-approve all tool calls.
+        checkpointer: Optional checkpointer for session persistence.
+
+    Returns:
+        2-tuple of (agent_graph, backend_factory).
+    """
+    from deepagents_cli.novel.imitate_middleware import ImitateMemoryMiddleware
+    from deepagents_cli.novel.imitate_tools import get_all_imitate_tools, init_imitate_store
+    from deepagents_cli.novel.memory_tools import get_all_memory_tools
+    from deepagents_cli.novel.project import NovelProject
+
+    tools = list(tools) if tools else []
+
+    # Add imitate tools
+    tools.extend(get_all_imitate_tools())
+
+    # Add memory tools (for generation phase: remember/recall, character tracking)
+    tools.extend(get_all_memory_tools())
+
+    # Initialize stores
+    init_imitate_store(project_path)
+
+    # Load project
+    try:
+        project = NovelProject.load(project_path)
+    except FileNotFoundError:
+        project = NovelProject(project_path)
+        project._config = project._load_config()
+        project._state = project._load_state()
+
+    assistant_id = f"imitate-{project_title.replace(' ', '-').lower()}"
+
+    # Setup agent directory
+    agent_dir = settings.ensure_agent_dir(assistant_id)
+    agent_md = agent_dir / "AGENTS.md"
+    if not agent_md.exists():
+        agent_md.write_text(
+            f"# 仿写项目记忆: {project_title}\n\n"
+            f"## 项目信息\n"
+            f"- 标题: {project_title}\n"
+            f"- 模式: 仿写\n"
+            f"- 项目路径: {project_path}\n",
+            encoding="utf-8",
+        )
+
+    builtin_skills_dir = settings.get_builtin_skills_dir()
+
+    # Build middleware stack
+    agent_middleware = []
+    agent_middleware.append(PromptOptimizerMiddleware(marker_mode=True, auto_optimize=False))
+    agent_middleware.append(ImitateMemoryMiddleware(project=project))
+
+    # Filesystem backend
+    project_backend = FilesystemBackend(root_dir=str(project_path), virtual_mode=True)
+
+    # System prompt
+    system_prompt = _get_imitate_system_prompt(
+        project_path=project_path,
+        project_title=project_title,
+    )
+
+    # Interrupt config
+    if auto_approve:
+        interrupt_on = {}
+    else:
+        interrupt_on = _add_interrupt_on()
+
+    # Composite backend with skills route
+    def create_imitate_composite_backend(runtime):
+        routes = {}
+        if builtin_skills_dir and builtin_skills_dir.exists():
+            skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
+            routes["/skills/"] = skills_backend
+        return CompositeBackend(default=project_backend, routes=routes)
+
+    final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
+    agent = create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=tools,
+        backend=create_imitate_composite_backend,
+        middleware=agent_middleware,
+        interrupt_on=interrupt_on,
+        checkpointer=final_checkpointer,
+    ).with_config(config)
+
+    return agent, create_imitate_composite_backend
+
+
+def _get_imitate_system_prompt(
+    project_path: Path,
+    project_title: str,
+) -> str:
+    """Generate system prompt for the imitation agent.
+
+    Args:
+        project_path: Path to the imitation project.
+        project_title: Title of the new novel.
+
+    Returns:
+        System prompt string.
+    """
+    return f"""### 小说仿写会话
+
+你正在帮助用户基于源小说进行仿写创作，生成改编小说《{project_title}》。
+
+**项目信息**:
+- 标题: {project_title}
+- 模式: 仿写
+- 项目路径: {project_path}
+
+**你的角色**:
+你是一位专业的仿写编辑。根据用户的请求自主决定工作流程。你可以：
+- 用 index_source 建立源小说目录索引
+- 用 read_source_chapter / read_source_range 阅读源小说章节原文
+- 分析源小说DNA，主动推荐创意改编方案（S+/S/A-D多层次）
+- 用户确认方案后，用 save_analysis 保存改编计划
+- 用 get_generation_context + save_chapter 逐章生成
+
+**核心原则**:
+- 仿写 ≠ 抄袭：继承结构DNA（文风节奏、叙事模式、爽点分布），在人物、金手指、具体情节上做创造性改造
+- 原文是最好的老师：生成每章时参考源小说对应章节的原文来模仿文风
+- 金手指要换"具体实现"，保留"结构DNA"
+
+**文件操作**:
+- 项目文件在当前工作目录（虚拟路径以 `/` 开头）
+- 源小说在 `/source/` 目录
+- 分析结果在 `/analysis/` 目录
+- 生成章节在 `/chapters/` 目录
+- 使用 `read_file` / `write_file` / `edit_file` 操作文件
+- 禁止使用 shell 命令进行文件操作
+
+### Human-in-the-Loop Tool Approval
+
+某些工具调用需要用户批准。当工具调用被拒绝时:
+1. 立即接受用户的决定
+2. 建议替代方案或询问澄清
+3. 不要重试相同的被拒绝命令
 """

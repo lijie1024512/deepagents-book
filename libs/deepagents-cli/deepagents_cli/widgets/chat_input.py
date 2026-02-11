@@ -298,7 +298,7 @@ class ChatInput(Vertical):
 
         Args:
             cwd: Current working directory for file completion
-            history_file: Path to history file (default: ~/.deepagents/history.jsonl)
+            history_file: Path to history file (default: {project_root}/.deepagents/history.jsonl)
             **kwargs: Additional arguments for parent
         """
         super().__init__(**kwargs)
@@ -309,7 +309,9 @@ class ChatInput(Vertical):
 
         # Set up history manager
         if history_file is None:
-            history_file = Path.home() / ".deepagents" / "history.jsonl"
+            from deepagents_cli.config import settings
+
+            history_file = settings.user_deepagents_dir / "history.jsonl"
         self._history = HistoryManager(history_file)
         self._submit_enabled = True
 

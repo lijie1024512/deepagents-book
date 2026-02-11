@@ -173,6 +173,12 @@ ignore-var-parameters = true
 "tests/unit_tests/test_local_context.py" = ["ANN001"]
 "tests/unit_tests/test_sessions.py" = ["ANN001", "ANN202", "E501"]
 "tests/unit_tests/test_version.py" = ["S603"]
+"tests/unit_tests/test_chunker.py" = ["ANN001", "ARG002", "RUF001"]
+"tests/unit_tests/test_imitate_tools.py" = ["ANN001", "ARG002", "E501", "RUF001", "RUF003"]
+"deepagents_cli/novel/chunker.py" = ["FBT001", "FBT002", "PLR0912", "PLR0915", "PLR2004", "TC003", "TRY300"]
+"deepagents_cli/novel/imitate_tools.py" = ["ANN201", "ARG001", "D103", "D415", "DTZ005", "E501", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "PLR0915", "PLR2004", "RUF001", "RUF002", "RUF003", "S608", "TC003", "TRY003", "TRY300"]
+"deepagents_cli/novel/imitate_middleware.py" = ["ANN204", "ANN401", "E501", "PLR2004", "RUF001", "RUF002", "RUF003", "TC003"]
+"deepagents_cli/novel/commands.py" = ["ANN001", "ANN201", "ANN202", "E501", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "PLR0915", "RUF001", "RUF003", "TC003", "TRY003", "TRY300"]
 
 [tool.pytest.ini_options]
 timeout = 10  # Default timeout for all tests (can be overridden per-test)
