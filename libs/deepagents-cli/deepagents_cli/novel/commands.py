@@ -667,6 +667,148 @@ def _migrate(
                 console.print(f"  ⚠ {f}")
 
 
+def _session(action: str, thread_id: str | None = None) -> None:
+    """Manage novel/imitate conversation sessions (LangGraph checkpoints).
+
+    Args:
+        action: Action to perform (list/view/delete/reset).
+        thread_id: Thread ID (for view/delete).
+    """
+    import asyncio
+
+    from rich.table import Table
+
+    from deepagents_cli.sessions import delete_thread, get_db_path, list_threads
+
+    async def _list_sessions() -> list[dict]:
+        """List all novel/imitate sessions."""
+        all_threads = await list_threads(limit=100)
+        # Filter to novel/imitate sessions only
+        return [
+            t
+            for t in all_threads
+            if t["thread_id"]
+            and (t["thread_id"].startswith("novel-") or t["thread_id"].startswith("imitate-"))
+        ]
+
+    async def _get_session_detail(tid: str) -> dict | None:
+        """Get detail info for a session."""
+        import aiosqlite
+
+        db_path = str(get_db_path())
+        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+            # Check if table exists
+            query = "SELECT 1 FROM sqlite_master WHERE type='table' AND name='checkpoints'"
+            async with conn.execute(query) as cursor:
+                if await cursor.fetchone() is None:
+                    return None
+
+            # Get checkpoint count and timestamps
+            query = """
+                SELECT COUNT(*) as cp_count,
+                       MIN(json_extract(metadata, '$.updated_at')) as first_at,
+                       MAX(json_extract(metadata, '$.updated_at')) as last_at,
+                       json_extract(metadata, '$.agent_name') as agent_name
+                FROM checkpoints
+                WHERE thread_id = ?
+            """
+            async with conn.execute(query, (tid,)) as cursor:
+                row = await cursor.fetchone()
+                if not row or row[0] == 0:
+                    return None
+                return {
+                    "thread_id": tid,
+                    "checkpoint_count": row[0],
+                    "first_at": row[1],
+                    "last_at": row[2],
+                    "agent_name": row[3],
+                }
+
+    async def _delete_all_novel_sessions() -> int:
+        """Delete all novel/imitate sessions. Returns count deleted."""
+        sessions = await _list_sessions()
+        count = 0
+        for s in sessions:
+            if await delete_thread(s["thread_id"]):
+                count += 1
+        return count
+
+    if action == "list":
+        sessions = asyncio.run(_list_sessions())
+        if not sessions:
+            console.print("[yellow]没有找到小说/仿写会话。[/yellow]")
+            return
+
+        table = Table(
+            title="小说/仿写会话列表",
+            show_header=True,
+            header_style=f"bold {COLORS['primary']}",
+        )
+        table.add_column("Thread ID", style="bold")
+        table.add_column("类型")
+        table.add_column("最后更新", style="dim")
+
+        for s in sessions:
+            tid = s["thread_id"]
+            session_type = "仿写" if tid.startswith("imitate-") else "原创"
+            updated = s.get("updated_at") or ""
+            table.add_row(tid, session_type, updated)
+
+        console.print()
+        console.print(table)
+        console.print()
+        console.print("[dim]查看详情: uv run deepagents novel session view <thread_id>[/dim]")
+        console.print("[dim]删除会话: uv run deepagents novel session delete <thread_id>[/dim]")
+
+    elif action == "view":
+        if not thread_id:
+            console.print("[bold red]错误:[/bold red] 请指定 thread_id")
+            console.print("[dim]用法: uv run deepagents novel session view <thread_id>[/dim]")
+            return
+
+        detail = asyncio.run(_get_session_detail(thread_id))
+        if not detail:
+            console.print(f"[bold red]错误:[/bold red] 会话 '{thread_id}' 不存在")
+            return
+
+        tid = detail["thread_id"]
+        session_type = "仿写" if tid.startswith("imitate-") else "原创"
+        project_name_part = tid.split("-", 1)[1] if "-" in tid else tid
+
+        console.print(f"\n[bold]会话详情[/bold]", style=COLORS["primary"])
+        console.print(f"  Thread ID: {tid}")
+        console.print(f"  类型: {session_type}")
+        console.print(f"  项目: {project_name_part}")
+        console.print(f"  Agent: {detail.get('agent_name') or '未知'}")
+        console.print(f"  检查点数: {detail['checkpoint_count']}")
+        console.print(f"  首次创建: {detail.get('first_at') or '未知'}")
+        console.print(f"  最后更新: {detail.get('last_at') or '未知'}")
+        console.print()
+
+    elif action == "delete":
+        if not thread_id:
+            console.print("[bold red]错误:[/bold red] 请指定 thread_id")
+            console.print("[dim]用法: uv run deepagents novel session delete <thread_id>[/dim]")
+            return
+
+        deleted = asyncio.run(delete_thread(thread_id))
+        if deleted:
+            console.print(f"[bold green]✓ 会话 '{thread_id}' 已删除[/bold green]")
+        else:
+            console.print(f"[bold red]错误:[/bold red] 会话 '{thread_id}' 不存在")
+
+    elif action == "reset":
+        count = asyncio.run(_delete_all_novel_sessions())
+        if count > 0:
+            console.print(f"[bold green]✓ 已删除 {count} 个小说/仿写会话[/bold green]")
+        else:
+            console.print("[yellow]没有找到需要删除的会话。[/yellow]")
+
+    else:
+        console.print(f"[bold red]错误:[/bold red] 未知操作: {action}")
+        console.print("[dim]可用操作: list, view, delete, reset[/dim]")
+
+
 def _resolve_project(project_name: str | None) -> NovelProject | None:
     """Resolve project from name or current directory.
 
@@ -866,6 +1008,8 @@ def _imitate_status(project_name: str | None = None) -> None:
 def _build_imitate_prompt(project: NovelProject) -> str:
     """Build initial prompt for imitation session.
 
+    Checks existing project state to avoid redundant index rebuilding.
+
     Args:
         project: The novel project.
 
@@ -873,6 +1017,41 @@ def _build_imitate_prompt(project: NovelProject) -> str:
         Initial prompt string.
     """
     config = project.config
+
+    # Check existing state to build a smarter prompt
+    from deepagents_cli.novel.imitate_tools import _get_db
+
+    db = _get_db()
+    has_index = False
+    has_analysis = False
+    chapter_count = 0
+
+    if db is not None:
+        with db._connection() as conn:
+            row = conn.execute("SELECT total_chapters FROM imitate_source WHERE id=1").fetchone()
+            has_index = bool(row and row[0])
+            analysis_count = conn.execute("SELECT COUNT(*) FROM imitate_analysis").fetchone()[0]
+            has_analysis = analysis_count > 0
+            chapter_count = conn.execute("SELECT COUNT(*) FROM imitate_chapters").fetchone()[0]
+
+    if chapter_count > 0:
+        return (
+            f"我正在进行小说仿写项目《{config.title}》。\n\n"
+            f"项目已有进度：已生成 {chapter_count} 章。\n"
+            f"请用 get_project_status 查看当前状态，然后继续仿写工作。"
+        )
+    if has_analysis:
+        return (
+            f"我正在进行小说仿写项目《{config.title}》。\n\n"
+            f"已完成DNA分析和改编计划。\n"
+            f"请用 get_project_status 查看当前状态，准备开始逐章生成。"
+        )
+    if has_index:
+        return (
+            f"我正在进行小说仿写项目《{config.title}》。\n\n"
+            f"源小说索引已建立。\n"
+            f"请用 get_project_status 查看当前状态，然后根据我的需求进行仿写。"
+        )
     return (
         f"我正在进行小说仿写项目《{config.title}》。\n\n"
         f"源小说文件位于 /source/ 目录。\n"
@@ -1030,6 +1209,21 @@ def setup_novel_parser(subparsers: Any) -> argparse.ArgumentParser:
         help="回滚迁移，恢复原始文件",
     )
 
+    # novel session
+    session_parser = novel_subparsers.add_parser(
+        "session", help="管理会话", description="查看、删除、重置小说/仿写的对话会话"
+    )
+    session_parser.add_argument(
+        "action",
+        choices=["list", "view", "delete", "reset"],
+        help="操作: list(列表)/view(查看)/delete(删除)/reset(重置全部)",
+    )
+    session_parser.add_argument(
+        "thread_id",
+        nargs="?",
+        help="会话 Thread ID（view/delete 时必填）",
+    )
+
     # novel imitate
     imitate_parser = novel_subparsers.add_parser(
         "imitate", help="仿写工具", description="基于源小说进行仿写创作"
@@ -1085,6 +1279,11 @@ def execute_novel_command(args: argparse.Namespace) -> None:
             getattr(args, "remove_backups", False),
             getattr(args, "rollback", False),
         )
+    elif args.novel_command == "session":
+        _session(
+            action=args.action,
+            thread_id=getattr(args, "thread_id", None),
+        )
     elif args.novel_command == "imitate":
         imitate_cmd = getattr(args, "imitate_command", None)
         if imitate_cmd == "init":
@@ -1114,6 +1313,7 @@ def execute_novel_command(args: argparse.Namespace) -> None:
         console.print("  status <项目名>  查看项目状态")
         console.print("  start <项目名>   开始创作会话")
         console.print("  checkpoint      管理检查点")
+        console.print("  session         管理对话会话（增删改查）")
         console.print("  migrate         迁移到SQLite存储")
         console.print("  imitate         仿写工具")
         console.print("\n[bold]示例:[/bold]", style=COLORS["primary"])
@@ -1122,6 +1322,9 @@ def execute_novel_command(args: argparse.Namespace) -> None:
         console.print("  uv run deepagents novel start 我的小说")
         console.print("  uv run deepagents novel start 我的小说 --mode outline")
         console.print("  uv run deepagents novel imitate init 新作 --source 源小说.txt")
+        console.print("  uv run deepagents novel session list")
+        console.print("  uv run deepagents novel session delete <thread_id>")
+        console.print("  uv run deepagents novel session reset")
         console.print("\n[dim]注意：请在 libs/deepagents-cli/ 目录下运行以上命令[/dim]")
 
 

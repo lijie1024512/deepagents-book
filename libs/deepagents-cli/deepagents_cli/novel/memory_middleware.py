@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -88,6 +89,8 @@ class NovelMemoryMiddleware(AgentMiddleware):
         self.enable_hooks = enable_hooks
         self._is_first_call = True  # Track if this is the first call (for session recovery)
         self._skill_cache: dict[str, str] = {}  # Cache for loaded skill files
+
+        self._prompt_call_count = 0  # Counter for prompt logging
 
         # Initialize memory store
         init_memory_store(project.path)
@@ -372,6 +375,97 @@ class NovelMemoryMiddleware(AgentMiddleware):
 
         return {"messages": new_messages}
 
+    @staticmethod
+    def _extract_message_text(msg: Any) -> str:
+        """Extract readable text from a langchain message."""
+        content = getattr(msg, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict) and "text" in block:
+                    text_parts.append(block["text"])
+            return "\n".join(text_parts)
+        return str(content)
+
+    def _log_prompt(self, request: ModelRequest) -> None:
+        """Log the full request sent to the LLM for debugging.
+
+        Writes system message + all conversation messages to
+        .novel/logs/prompts-{date}.md.
+
+        Args:
+            request: The final ModelRequest after all middleware injections.
+        """
+        try:
+            log_dir = Path(self.project.path) / ".novel" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            self._prompt_call_count += 1
+            _CST = timezone(timedelta(hours=8))
+            now = datetime.now(_CST)
+            date_str = now.strftime("%Y-%m-%d")
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+            log_file = log_dir / f"prompts-{date_str}.md"
+
+            parts: list[str] = []
+
+            # Header
+            parts.append(f"\n{'=' * 80}")
+            parts.append(f"## Call #{self._prompt_call_count} [{timestamp}]")
+            parts.append(f"{'=' * 80}\n")
+
+            # System message
+            if request.system_message is not None:
+                parts.append("### System Message\n")
+                parts.append(self._extract_message_text(request.system_message))
+                parts.append("")
+
+            # Conversation messages (user, assistant, tool results)
+            if request.messages:
+                parts.append(f"### Messages ({len(request.messages)})\n")
+                for i, msg in enumerate(request.messages):
+                    msg_type = getattr(msg, "type", type(msg).__name__)
+                    text = self._extract_message_text(msg)
+
+                    # Tool calls on AI messages
+                    tool_calls = getattr(msg, "tool_calls", None)
+                    tool_info = ""
+                    if tool_calls:
+                        names = [tc.get("name", "?") for tc in tool_calls]
+                        tool_info = f" [tool_calls: {', '.join(names)}]"
+
+                    parts.append(f"#### [{i}] {msg_type}{tool_info}\n")
+                    # Truncate very long messages to keep log manageable
+                    if len(text) > 5000:
+                        parts.append(text[:5000])
+                        parts.append(f"\n... (truncated, total {len(text)} chars)")
+                    else:
+                        parts.append(text)
+                    parts.append("")
+
+            # Tool names
+            if hasattr(request, "tools") and request.tools:
+                tool_names = []
+                for t in request.tools:
+                    name = t.name if hasattr(t, "name") else t.get("name", "?")
+                    tool_names.append(name)
+                parts.append(f"### Tools ({len(tool_names)})\n")
+                parts.append(", ".join(tool_names))
+                parts.append("")
+
+            parts.append("")
+
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write("\n".join(parts))
+
+        except Exception:
+            logger.debug("Failed to log prompt", exc_info=True)
+
     def _get_modified_request(self, request: ModelRequest) -> ModelRequest:
         """Inject auto context into system prompt."""
         auto_context = self._build_auto_context()
@@ -387,6 +481,7 @@ class NovelMemoryMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Inject context and handle the request."""
         modified_request = self._get_modified_request(request)
+        self._log_prompt(modified_request)
         return handler(modified_request)
 
     async def awrap_model_call(
@@ -396,6 +491,7 @@ class NovelMemoryMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """(async) Inject context and handle the request."""
         modified_request = self._get_modified_request(request)
+        self._log_prompt(modified_request)
         return await handler(modified_request)
 
 

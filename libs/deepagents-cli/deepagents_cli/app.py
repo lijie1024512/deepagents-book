@@ -597,6 +597,11 @@ class DeepAgentsApp(App):
                 self._token_tracker.reset()
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")
+            # Delete checkpoint data for the current thread so it won't be restored on next launch
+            if self._lc_thread_id:
+                from deepagents_cli.sessions import delete_thread
+
+                await delete_thread(self._lc_thread_id)
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()

@@ -1,9 +1,10 @@
 """Imitate Memory Middleware.
 
-Simplified context injection for the agent-driven novel imitation workflow:
-1. Loads orchestrator Skill (always) + generation guide Skill
-2. Injects project metadata and available tools reference
-3. No phase tracking — the agent decides its own workflow
+State-aware context injection for the agent-driven novel imitation workflow:
+1. Detects project state (planning vs generation) from database
+2. Planning phase: injects orchestrator Skill (DNA analysis, creative proposals)
+3. Generation phase: injects generation guide Skill ONLY (focused writing instructions)
+4. Never injects both simultaneously — avoids attention dilution
 
 Follows the same pattern as NovelMemoryMiddleware.
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -48,6 +50,7 @@ class ImitateMemoryMiddleware(AgentMiddleware):
         super().__init__()
         self.project = project
         self._skill_cache: dict[str, str] = {}
+        self._prompt_call_count = 0
 
         init_imitate_store(project.path)
 
@@ -76,8 +79,32 @@ class ImitateMemoryMiddleware(AgentMiddleware):
         self._skill_cache[skill_name] = content
         return content
 
+    def _detect_phase(self) -> str:
+        """Detect current project phase from database state.
+
+        Returns:
+            "planning" if no adaptation_plan exists yet,
+            "generation" if adaptation_plan + character_mapping exist.
+        """
+        db = _get_db()
+        if db is None:
+            return "planning"
+
+        with db._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM imitate_analysis WHERE key='adaptation_plan'"
+            ).fetchone()
+
+        return "generation" if row else "planning"
+
     def _build_auto_context(self) -> str:
-        """Build context to inject into the system prompt."""
+        """Build context to inject into the system prompt.
+
+        State-aware injection:
+        - Planning phase: inject orchestrator SKILL (DNA analysis, proposals)
+        - Generation phase: inject generation SKILL ONLY (writing instructions)
+        Never both simultaneously — prevents attention dilution.
+        """
         parts: list[str] = []
 
         # Project metadata
@@ -91,39 +118,156 @@ class ImitateMemoryMiddleware(AgentMiddleware):
 
         # Quick status: saved analyses + generated chapters
         db = _get_db()
+        analysis_keys_list: list[str] = []
+        chapter_count = 0
         if db is not None:
             with db._connection() as conn:
                 analysis_keys = conn.execute(
                     "SELECT key FROM imitate_analysis ORDER BY key"
                 ).fetchall()
                 chapter_count = conn.execute("SELECT COUNT(*) FROM imitate_chapters").fetchone()[0]
-            if analysis_keys:
-                keys_str = ", ".join(k[0] for k in analysis_keys)
-                parts.append(f"【已保存分析】{keys_str}")
+            analysis_keys_list = [k[0] for k in analysis_keys]
+            if analysis_keys_list:
+                parts.append(f"【已保存分析】{', '.join(analysis_keys_list)}")
             if chapter_count:
                 parts.append(f"【已生成章节】{chapter_count} 章")
 
-        # Load orchestrator skill (always)
-        orchestrator = self._load_skill_file("novel-imitate-orchestrator")
-        if orchestrator:
-            parts.append(f"\n{orchestrator}")
+        # --- State-aware SKILL injection ---
+        phase = self._detect_phase()
 
-        # Load generation guide skill
-        generation = self._load_skill_file("novel-imitate-generation")
-        if generation:
-            parts.append(f"\n{generation}")
-
-        # Tool quick reference
-        parts.append(
-            "【仿写工具速查】\n"
-            "- 索引: index_source\n"
-            "- 阅读: read_source_chapter / read_source_range / search_source\n"
-            "- 分析: save_analysis / get_analysis\n"
-            "- 生成: get_generation_context / save_chapter\n"
-            "- 状态: get_project_status"
-        )
+        if phase == "planning":
+            # Planning: inject orchestrator + generation guide
+            orchestrator = self._load_skill_file("novel-imitate-orchestrator")
+            if orchestrator:
+                parts.append(f"\n{orchestrator}")
+            generation = self._load_skill_file("novel-imitate-generation")
+            if generation:
+                parts.append(f"\n{generation}")
+            # Full tool reference for planning
+            parts.append(
+                "【仿写工具速查】\n"
+                "- 索引: index_source\n"
+                "- 阅读: read_source_chapter / read_source_range / search_source\n"
+                "- 分析: save_analysis / get_analysis\n"
+                "- 生成: get_generation_context / save_chapter\n"
+                "- 状态: get_project_status"
+            )
+        else:
+            # Generation: ONLY inject generation guide — keep context focused
+            generation = self._load_skill_file("novel-imitate-generation")
+            if generation:
+                parts.append(f"\n{generation}")
+            # Streamlined tool reference for generation
+            parts.append(
+                "【章节生成工具流程（严格遵循！）】\n"
+                "每章只需3步：\n"
+                "1. read_source_chapter(chapter=N) → 精读源文，学习写作技法（描写密度/文风/人物刻画）\n"
+                "2. get_generation_context(chapter=N) → 获取改编计划+角色映射+金手指+氛围DNA+前文摘要\n"
+                "3. 结合技法+改编计划，原创写作 → save_chapter(chapter=N, content=..., summary=..., title=...)\n\n"
+                "save_chapter 之后直接向用户汇报完成情况。\n\n"
+                "【⚠️ 仿写核心原则】\n"
+                "- 学源文的'怎么写'（技法），不抄源文的'写了什么'（内容）\n"
+                "- 质量优于原文：源文N个描写维度，你要N+1个维度\n"
+                "- 不要换名抄袭：不能把源文句子换个人名就用\n\n"
+                "【严禁以下操作】\n"
+                "- 不要调用 ls、index_source、get_analysis、read_file\n"
+                "- 不要在 save_chapter 之后调用 remember（摘要已自动保存）\n"
+                "- 不要调用 write_todos（单章生成不需要待办列表）\n"
+                "- get_generation_context 已包含所有必要信息，不需要额外获取"
+            )
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _extract_message_text(msg: Any) -> str:
+        """Extract readable text from a langchain message."""
+        content = getattr(msg, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict) and "text" in block:
+                    text_parts.append(block["text"])
+            return "\n".join(text_parts)
+        return str(content)
+
+    def _log_prompt(self, request: ModelRequest) -> None:
+        """Log the full request sent to the LLM for debugging.
+
+        Writes system message + all conversation messages to
+        .novel/logs/prompts-{date}.md.
+
+        Args:
+            request: The final ModelRequest after all middleware injections.
+        """
+        try:
+            log_dir = Path(self.project.path) / ".novel" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            self._prompt_call_count += 1
+            _CST = timezone(timedelta(hours=8))
+            now = datetime.now(_CST)
+            date_str = now.strftime("%Y-%m-%d")
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+            log_file = log_dir / f"prompts-{date_str}.md"
+
+            parts: list[str] = []
+
+            # Header
+            parts.append(f"\n{'=' * 80}")
+            parts.append(f"## Call #{self._prompt_call_count} [{timestamp}]")
+            parts.append(f"{'=' * 80}\n")
+
+            # System message
+            if request.system_message is not None:
+                parts.append("### System Message\n")
+                parts.append(self._extract_message_text(request.system_message))
+                parts.append("")
+
+            # Conversation messages (user, assistant, tool results)
+            if request.messages:
+                parts.append(f"### Messages ({len(request.messages)})\n")
+                for i, msg in enumerate(request.messages):
+                    msg_type = getattr(msg, "type", type(msg).__name__)
+                    text = self._extract_message_text(msg)
+
+                    # Tool calls on AI messages
+                    tool_calls = getattr(msg, "tool_calls", None)
+                    tool_info = ""
+                    if tool_calls:
+                        names = [tc.get("name", "?") for tc in tool_calls]
+                        tool_info = f" [tool_calls: {', '.join(names)}]"
+
+                    parts.append(f"#### [{i}] {msg_type}{tool_info}\n")
+                    # Truncate very long messages to keep log manageable
+                    if len(text) > 5000:
+                        parts.append(text[:5000])
+                        parts.append(f"\n... (truncated, total {len(text)} chars)")
+                    else:
+                        parts.append(text)
+                    parts.append("")
+
+            # Tool names
+            if hasattr(request, "tools") and request.tools:
+                tool_names = []
+                for t in request.tools:
+                    name = t.name if hasattr(t, "name") else t.get("name", "?")
+                    tool_names.append(name)
+                parts.append(f"### Tools ({len(tool_names)})\n")
+                parts.append(", ".join(tool_names))
+                parts.append("")
+
+            parts.append("")
+
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write("\n".join(parts))
+
+        except Exception:
+            logger.debug("Failed to log prompt", exc_info=True)
 
     def _get_modified_request(self, request: ModelRequest) -> ModelRequest:
         """Inject auto context into system prompt."""
@@ -138,6 +282,7 @@ class ImitateMemoryMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Inject context and handle the request."""
         modified_request = self._get_modified_request(request)
+        self._log_prompt(modified_request)
         return handler(modified_request)
 
     async def awrap_model_call(
@@ -147,6 +292,7 @@ class ImitateMemoryMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """(async) Inject context and handle the request."""
         modified_request = self._get_modified_request(request)
+        self._log_prompt(modified_request)
         return await handler(modified_request)
 
 

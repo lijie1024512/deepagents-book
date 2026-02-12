@@ -14,6 +14,7 @@ additional imitate_* tables created on first use.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING
 from langchain_core.tools import tool
 
 from deepagents_cli.novel.chunker import (
+    ChapterInfo,
     SourceIndex,
     index_source_novel,
     load_chapter_range_text,
@@ -78,13 +80,20 @@ CREATE TABLE IF NOT EXISTS imitate_chapters (
 def init_imitate_store(project_path: Path) -> None:
     """Initialize the imitate module state and database tables.
 
+    Also auto-detects source file if the imitate_source table is empty
+    but a source file exists in the project's source/ directory (handles
+    the case where the database was deleted and recreated).
+
     Args:
         project_path: Path to the novel project directory.
     """
     global _imitate_project_path, _imitate_db, _source_index  # noqa: PLW0603
 
+    # Only reset source index cache if the project path actually changed
+    if _imitate_project_path != project_path:
+        _source_index = None
+
     _imitate_project_path = project_path
-    _source_index = None
 
     from deepagents_cli.novel.database import NovelDatabase
 
@@ -92,6 +101,21 @@ def init_imitate_store(project_path: Path) -> None:
 
     with _imitate_db._connection() as conn:
         conn.executescript(IMITATE_SCHEMA_SQL)
+
+        # Auto-populate source if table is empty but source file exists on disk
+        row = conn.execute("SELECT 1 FROM imitate_source WHERE id=1").fetchone()
+        if row is None:
+            source_dir = project_path / "source"
+            if source_dir.exists():
+                for f in sorted(source_dir.iterdir()):
+                    if f.is_file() and f.suffix in (".txt", ".text"):
+                        rel_path = f"source/{f.name}"
+                        file_size = f.stat().st_size
+                        conn.execute(
+                            "INSERT INTO imitate_source (id, file_path, file_size) VALUES (1, ?, ?)",
+                            (rel_path, file_size),
+                        )
+                        break
 
 
 def _get_db() -> NovelDatabase | None:
@@ -114,8 +138,74 @@ def _get_source_path() -> Path | None:
     return _imitate_project_path / rel_path
 
 
+def _restore_index_from_db(source_path: Path) -> SourceIndex | None:
+    """Try to restore a SourceIndex from the database's chapter_index JSON.
+
+    Returns None if the DB doesn't have valid data or the file has changed.
+    """
+    db = _get_db()
+    if db is None:
+        return None
+
+    with db._connection() as conn:
+        row = conn.execute(
+            "SELECT file_size, total_chars, encoding, chapter_index FROM imitate_source WHERE id=1"
+        ).fetchone()
+
+    if not row or not row[3]:
+        return None
+
+    # Check if the source file size matches (detect if file changed)
+    saved_file_size = row[0]
+    current_file_size = source_path.stat().st_size
+    if saved_file_size and saved_file_size != current_file_size:
+        return None
+
+    try:
+        chapter_data = json.loads(row[3])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not chapter_data or not isinstance(chapter_data, list):
+        return None
+
+    # Check if chapter data has byte offsets (newer format)
+    first = chapter_data[0]
+    if "byte_offset" not in first:
+        return None  # Old format without byte info, need full scan
+
+    chapters = [
+        ChapterInfo(
+            chapter_id=ch["id"],
+            title=ch.get("title", ""),
+            char_offset=ch.get("char_offset", 0),
+            byte_offset=ch["byte_offset"],
+            char_count=ch.get("chars", 0),
+            byte_count=ch.get("byte_count", 0),
+        )
+        for ch in chapter_data
+    ]
+
+    total_chars = row[1] or sum(c.char_count for c in chapters)
+    encoding = row[2] or "utf-8"
+
+    return SourceIndex(
+        file_path=source_path,
+        encoding=encoding,
+        total_chars=total_chars,
+        total_bytes=current_file_size,
+        chapters=chapters,
+    )
+
+
 def _get_source_index() -> SourceIndex | None:
-    """Get or build the source index (cached in module state)."""
+    """Get or build the source index (cached in module state).
+
+    Tries three layers in order:
+    1. In-memory cache (_source_index)
+    2. Restore from DB chapter_index JSON (avoids re-scanning the file)
+    3. Full file scan via index_source_novel()
+    """
     global _source_index  # noqa: PLW0603
 
     if _source_index is not None:
@@ -124,6 +214,12 @@ def _get_source_index() -> SourceIndex | None:
     source_path = _get_source_path()
     if source_path is None or not source_path.exists():
         return None
+
+    # Try to restore from DB before doing a full file scan
+    restored = _restore_index_from_db(source_path)
+    if restored is not None:
+        _source_index = restored
+        return _source_index
 
     _source_index = index_source_novel(source_path)
     return _source_index
@@ -157,9 +253,17 @@ def index_source() -> str:
     if index is None:
         return "错误：无法建立索引。"
 
-    # Save index metadata to database
+    # Save index metadata to database (include byte offsets for DB restoration)
     chapter_data = [
-        {"id": ch.chapter_id, "title": ch.title, "chars": ch.char_count} for ch in index.chapters
+        {
+            "id": ch.chapter_id,
+            "title": ch.title,
+            "chars": ch.char_count,
+            "char_offset": ch.char_offset,
+            "byte_offset": ch.byte_offset,
+            "byte_count": ch.byte_count,
+        }
+        for ch in index.chapters
     ]
     with db._connection() as conn:
         conn.execute(
@@ -172,16 +276,24 @@ def index_source() -> str:
             ),
         )
 
-    # Build table of contents
+    # Build table of contents (show first 5 chapters only to save tokens)
+    max_display = 5
+    total = len(index.chapters)
     lines = [
         "源小说索引完成！",
         f"- 编码: {index.encoding}",
         f"- 总字符数: {index.total_chars:,}",
-        f"- 检测到章节数: {len(index.chapters)}",
+        f"- 检测到章节数: {total}",
         "",
-        "章节目录:",
+        f"章节目录（前 {min(max_display, total)} 章）:",
     ]
-    lines.extend(f"  {ch.chapter_id}. {ch.title} ({ch.char_count:,}字)" for ch in index.chapters)
+    lines.extend(
+        f"  {ch.chapter_id}. {ch.title} ({ch.char_count:,}字)"
+        for ch in index.chapters[:max_display]
+    )
+
+    if total > max_display:
+        lines.append(f"  ... 共 {total} 章，用 read_source_chapter(chapter=N) 按需逐章读取")
 
     if not index.chapters:
         lines.append("  （未检测到章节标记，可以用 read_source_range 按范围读取）")
@@ -221,7 +333,13 @@ def read_source_chapter(chapter: int) -> str:
     ch_info = next((c for c in index.chapters if c.chapter_id == chapter), None)
     title = ch_info.title if ch_info else f"第{chapter}章"
     char_count = ch_info.char_count if ch_info else len(text)
-    return f"=== {title} ({char_count:,}字) ===\n\n{text}"
+    return (
+        f"=== {title} ({char_count:,}字) ===\n\n{text}\n\n"
+        f"---\n"
+        f"【精读要点】学习源文的写作技法（文风节奏、描写密度、人物刻画手法），\n"
+        f"然后用原创文字写出质量优于原文的改编章节。\n"
+        f"学源文的'怎么写'，不抄源文的'写了什么'。"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -383,13 +501,13 @@ def get_analysis(key: str) -> str:
 # Tool 7: Save generated chapter
 # ---------------------------------------------------------------------------
 @tool
-def save_chapter(chapter: int, content: str, summary: str, title: str = "") -> str:
+def save_chapter(chapter: int, content: str, summary: str = "", title: str = "") -> str:
     """保存生成的章节内容和摘要。
 
     Args:
         chapter: 章节编号。
         content: 章节正文内容。
-        summary: 章节摘要（用于后续章节的前文回顾）。
+        summary: 章节摘要（用于后续章节的前文回顾）。如果省略，章节仍会保存，但请尽量提供。
         title: 章节标题（可选）。
 
     Returns:
@@ -414,7 +532,67 @@ def save_chapter(chapter: int, content: str, summary: str, title: str = "") -> s
         header = f"# 第{chapter}章" + (f" {title}" if title else "") + "\n\n"
         chapter_file.write_text(header + content, encoding="utf-8")
 
-    return f"第{chapter}章保存成功。已生成: {generated_count} 章"
+    warning = ""
+    if not summary:
+        warning = "\n⚠️ 未提供章节摘要。请再调用一次 save_chapter 补充 summary，否则后续章节生成时缺少前文回顾。"
+
+    return (
+        f"第{chapter}章保存成功。已生成: {generated_count} 章{warning}\n\n"
+        f"✅ 章节摘要已自动保存到数据库，后续章节的 get_generation_context 会自动获取。\n"
+        f"→ 请直接向用户汇报完成情况，不需要再调用 remember、write_todos 等工具。"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helper: extract chapter-specific plan from markdown
+# ---------------------------------------------------------------------------
+def _extract_chapter_plan(plan_text: str, chapter: int) -> str | None:
+    """Extract chapter-specific adaptation plan from markdown text.
+
+    Looks for sections like "第N章改编要点", "第N章", "章节N" etc.
+
+    Args:
+        plan_text: Full adaptation plan markdown.
+        chapter: Chapter number to extract.
+
+    Returns:
+        Chapter-specific plan text, or None if not found.
+    """
+    # Try various heading patterns for this chapter
+    # NOTE: Use string concat (not f-strings) for regex quantifiers like {1,4}
+    # because f-strings interpret {1,4} as a Python set literal.
+    patterns = [
+        r"(#{1,4}\s*第" + str(chapter) + r"章[^\n]*\n)",
+        r"(#{1,4}\s*Chapter\s*" + str(chapter) + r"[^\n]*\n)",
+        r"(第" + str(chapter) + r"章改编要点[^\n]*\n)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, plan_text, re.IGNORECASE)
+        if match:
+            start = match.start()
+            # Find next section heading at same or higher level
+            heading_level = match.group().count("#")
+            if heading_level > 0:
+                next_pattern = r"^#{1," + str(heading_level) + r"}\s"
+                next_heading = re.search(
+                    next_pattern,
+                    plan_text[match.end() :],
+                    re.MULTILINE,
+                )
+            else:
+                next_heading = re.search(
+                    r"^#{1,4}\s|^第\d+章",
+                    plan_text[match.end() :],
+                    re.MULTILINE,
+                )
+            if next_heading:
+                end = match.end() + next_heading.start()
+            else:
+                end = len(plan_text)
+            return plan_text[start:end].strip()
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -445,9 +623,17 @@ def get_generation_context(chapter: int) -> str:
     if source_path and index and index.chapters and chapter <= len(index.chapters):
         try:
             source_text = load_chapter_text(source_path, index, chapter)
-            # Truncate if very long (keep first 5000 chars as style reference)
-            if len(source_text) > 5000:
-                source_text = source_text[:5000] + "\n\n...(已截取前5000字作为风格参考)"
+            # Truncate if very long — keep enough text for style immersion
+            max_ref_chars = 10000
+            if len(source_text) > max_ref_chars:
+                # Try to cut at a paragraph boundary
+                cut_region = source_text[max_ref_chars - 500 : max_ref_chars]
+                last_para = cut_region.rfind("\n\n")
+                if last_para != -1:
+                    cut_pos = max_ref_chars - 500 + last_para
+                else:
+                    cut_pos = max_ref_chars
+                source_text = source_text[:cut_pos] + f"\n\n...(已截取前{cut_pos}字作为风格参考，原文共{len(source_text)}字)"
             parts.extend(["", f"## 源小说第{chapter}章原文（风格参考）", source_text])
         except ValueError:
             pass
@@ -458,24 +644,27 @@ def get_generation_context(chapter: int) -> str:
             "SELECT content FROM imitate_analysis WHERE key='adaptation_plan'"
         ).fetchone()
     if row and row[0]:
-        try:
-            plan = json.loads(row[0])
-            for entry in plan:
-                if entry.get("chapter") == chapter:
-                    parts.extend(
-                        ["", "## 本章改编计划", json.dumps(entry, ensure_ascii=False, indent=2)]
-                    )
-                    break
-        except (json.JSONDecodeError, TypeError):
-            pass
+        plan_text = row[0]
+        # Extract chapter-specific section from markdown
+        chapter_plan = _extract_chapter_plan(plan_text, chapter)
+        if chapter_plan:
+            parts.extend(["", "## 本章改编计划", chapter_plan])
+        else:
+            # Fallback: include full plan but truncated
+            if len(plan_text) > 4000:
+                plan_text = plan_text[:4000] + "\n\n...(改编计划已截取前4000字)"
+            parts.extend(["", "## 改编计划（完整）", plan_text])
 
-    # 3. Character mapping (for reference)
+    # 3. Character mapping (for reference — truncate if very long)
     with db._connection() as conn:
         row = conn.execute(
             "SELECT content FROM imitate_analysis WHERE key='character_mapping'"
         ).fetchone()
     if row and row[0]:
-        parts.extend(["", "## 角色映射", row[0]])
+        mapping_text = row[0]
+        if len(mapping_text) > 3000:
+            mapping_text = mapping_text[:3000] + "\n\n...(角色映射已截取前3000字，完整版用 get_analysis('character_mapping') 查看)"
+        parts.extend(["", "## 角色映射", mapping_text])
 
     # 4. Power system (for reference)
     with db._connection() as conn:
@@ -484,6 +673,14 @@ def get_generation_context(chapter: int) -> str:
         ).fetchone()
     if row and row[0]:
         parts.extend(["", "## 金手指设定", row[0]])
+
+    # 4b. World atmosphere (for genre/style consistency)
+    with db._connection() as conn:
+        row = conn.execute(
+            "SELECT content FROM imitate_analysis WHERE key='world_atmosphere'"
+        ).fetchone()
+    if row and row[0]:
+        parts.extend(["", "## 题材氛围DNA", row[0]])
 
     # 5. Previous chapter summaries (last 3)
     with db._connection() as conn:

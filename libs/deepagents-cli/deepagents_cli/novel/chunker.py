@@ -16,16 +16,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Chapter heading patterns (Chinese + English)
+# Rules:
+#   - "第X章/卷/回" are reliable chapter markers
+#   - "第X节" ONLY counts if followed by whitespace/punctuation/EOL
+#     (to avoid matching "第一节课是数学" in body text)
+#   - Digit prefix: "5 郊游" or bare "4" — safe with <=40 char line filter
+#   - Line should be short (<=40 chars) to avoid matching body text
 _CHAPTER_PATTERNS = [
-    # 第X章/节/卷/回 (Chinese numerals or digits)
-    re.compile(r"^\s*第[一二三四五六七八九十百千零\d]+[章节卷回]"),
+    # 第X章/卷/回 (Chinese numerals or digits) — always reliable
+    re.compile(r"^\s*第[一二三四五六七八九十百千零\d]+[章卷回]"),
+    # 第X节 — only when followed by whitespace, punctuation, or end of line
+    re.compile(r"^\s*第[一二三四五六七八九十百千零\d]+节(?:\s|[：:，,。.、]|$)"),
     # Chinese ordinal with separator: 一、 二、 三.
     re.compile(r"^\s*[一二三四五六七八九十百千]+[、.]"),
     # Chapter N / CHAPTER N
     re.compile(r"^\s*[Cc]hapter\s+\d+"),
-    # Digit prefix: 1、 2. 3  (but not dates or random numbers)
-    re.compile(r"^\s*\d{1,4}[、.\s]"),
+    # Digit prefix: "1、" "2." "5 郊游" or bare "4"
+    # Safe because _MAX_HEADING_LINE_LEN filters out long body text lines
+    re.compile(r"^\s*\d{1,4}(?:[、.\s]|$)"),
 ]
+
+# Max length for a line to be considered a chapter heading.
+# Body text lines matched by patterns above are usually much longer.
+_MAX_HEADING_LINE_LEN = 40
 
 
 @dataclass
@@ -71,6 +84,17 @@ class ChunkingResult:
     chunks: list[ChunkInfo]
     chapter_boundaries: list[int]  # character offset list
     encoding: str
+
+
+def _read_file_text(file_path: Path, encoding: str) -> str:
+    """Read file as text while preserving original line endings.
+
+    Using read_bytes().decode() instead of read_text() avoids the silent
+    \\r\\n → \\n conversion that Python's text mode performs.  This is
+    critical because byte offsets computed from the decoded text must
+    match the actual file positions for binary seek/read to work.
+    """
+    return file_path.read_bytes().decode(encoding, errors="replace")
 
 
 def detect_encoding(file_path: Path) -> str:
@@ -124,13 +148,13 @@ def scan_chapter_boundaries(file_path: Path, encoding: str = "utf-8") -> list[in
     Returns:
         Sorted list of character offsets for chapter boundaries.
     """
-    text = file_path.read_text(encoding=encoding)
+    text = _read_file_text(file_path, encoding)
     boundaries: list[int] = []
     offset = 0
 
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped:
+        if stripped and len(stripped) <= _MAX_HEADING_LINE_LEN:
             for pattern in _CHAPTER_PATTERNS:
                 if pattern.match(stripped):
                     boundaries.append(offset)
@@ -154,7 +178,7 @@ def index_source_novel(file_path: Path) -> SourceIndex:
         SourceIndex with chapter metadata.
     """
     encoding = detect_encoding(file_path)
-    text = file_path.read_text(encoding=encoding)
+    text = _read_file_text(file_path, encoding)
     total_chars = len(text)
     total_bytes = file_path.stat().st_size
 
@@ -219,7 +243,7 @@ def load_chapter_text(
             with file_path.open("rb") as f:
                 f.seek(ch.byte_offset)
                 raw = f.read(ch.byte_count)
-            return raw.decode(index.encoding)
+            return raw.decode(index.encoding, errors="replace")
 
     msg = f"Chapter {chapter_id} not found. Valid range: 1-{len(index.chapters)}"
     raise ValueError(msg)
@@ -260,7 +284,7 @@ def load_chapter_range_text(
             with file_path.open("rb") as f:
                 f.seek(ch.byte_offset)
                 raw = f.read(ch.byte_count)
-            parts.append(raw.decode(index.encoding))
+            parts.append(raw.decode(index.encoding, errors="replace"))
 
     return "".join(parts)
 
@@ -284,7 +308,7 @@ def search_source_text(
     Returns:
         List of (char_offset, context_snippet) tuples.
     """
-    text = file_path.read_text(encoding=encoding)
+    text = _read_file_text(file_path, encoding)
     results: list[tuple[int, str]] = []
     start = 0
 
@@ -334,7 +358,7 @@ def chunk_source_novel(
         ChunkingResult with chunk metadata.
     """
     encoding = detect_encoding(file_path)
-    text = file_path.read_text(encoding=encoding)
+    text = _read_file_text(file_path, encoding)
     total_chars = len(text)
 
     # Scan chapter boundaries
@@ -463,7 +487,7 @@ def load_chunk_text(file_path: Path, chunk: ChunkInfo, encoding: str = "utf-8") 
     with file_path.open("rb") as f:
         f.seek(chunk.start_offset)
         raw = f.read(chunk.end_offset - chunk.start_offset)
-    return raw.decode(encoding)
+    return raw.decode(encoding, errors="replace")
 
 
 def get_chunk_sample_indices(total_chunks: int, max_samples: int = 25) -> list[int]:

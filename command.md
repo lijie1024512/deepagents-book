@@ -166,6 +166,29 @@ uv run deepagents novel imitate start "神秘之旅改编"
 
 # 查看仿写项目状态（源小说信息、已保存分析、已生成章节）
 uv run deepagents novel imitate status "神秘之旅改编"
+
+● 不需要区分。xiaolu 封装的就是 uv run deepagents，后面所有子命令都能直接透传。
+
+  xiaolu 就等价于 uv run deepagents，所以：
+
+  # 原来的写法
+  uv run deepagents novel imitate init "神秘之旅改编" --source ./神秘之旅.txt
+
+  # 现在直接
+  xiaolu novel imitate init "神秘之旅改编" --source ./神秘之旅.txt
+
+  所有子命令都一样能用：
+
+  xiaolu                          # 交互模式
+  xiaolu -r                       # 恢复会话
+  xiaolu novel init "标题"         # 小说创作
+  xiaolu novel imitate init ...   # 仿写模式
+  xiaolu logs list                # 查看日志
+
+  xiaolu 只是把 uv run --project <路径> deepagents 这一长串缩短了，参数原封不动往后传（通过 %* 和
+  "$@"），不需要为不同子命令做多个入口。
+
+
 ```
 
 仿写会话中，Agent会自主完成：索引源小说 → 阅读章节 → 分析DNA → 推荐改编方案（S+/S/A-D多层次） → 逐章生成。你只需要用自然语言告诉它想做什么，比如"帮我仿写前三章"、"把主角换成女性"。

@@ -827,16 +827,18 @@ def create_imitate_agent(
     """
     from deepagents_cli.novel.imitate_middleware import ImitateMemoryMiddleware
     from deepagents_cli.novel.imitate_tools import get_all_imitate_tools, init_imitate_store
-    from deepagents_cli.novel.memory_tools import get_all_memory_tools
+    from deepagents_cli.novel.memory_tools import remember, recall, forget
     from deepagents_cli.novel.project import NovelProject
 
     tools = list(tools) if tools else []
 
-    # Add imitate tools
+    # Add imitate tools (9 tools: index, read, search, analysis, generation)
     tools.extend(get_all_imitate_tools())
 
-    # Add memory tools (for generation phase: remember/recall, character tracking)
-    tools.extend(get_all_memory_tools())
+    # Add only essential memory tools for imitate mode (3 tools)
+    # Full memory_tools set (18 tools) includes phase/character/foreshadow tools
+    # that are irrelevant to imitation and waste context on tool definitions.
+    tools.extend([remember, recall, forget])
 
     # Initialize stores
     init_imitate_store(project_path)
@@ -931,30 +933,28 @@ def _get_imitate_system_prompt(
 - 项目路径: {project_path}
 
 **你的角色**:
-你是一位专业的仿写编辑。根据用户的请求自主决定工作流程。你可以：
-- 用 index_source 建立源小说目录索引
-- 用 read_source_chapter / read_source_range 阅读源小说章节原文
-- 分析源小说DNA，主动推荐创意改编方案（S+/S/A-D多层次）
-- 用户确认方案后，用 save_analysis 保存改编计划
-- 用 get_generation_context + save_chapter 逐章生成
+你是一位专业的小说作家。你精读源小说学习其写作技法（文风、描写密度、人物刻画、氛围营造），然后结合改编计划用原创文字写出质量优于原文的章节。
 
-**核心原则**:
-- 仿写 ≠ 抄袭：继承结构DNA（文风节奏、叙事模式、爽点分布），在人物、金手指、具体情节上做创造性改造
-- 原文是最好的老师：生成每章时参考源小说对应章节的原文来模仿文风
-- 金手指要换"具体实现"，保留"结构DNA"
+**⚠️ 仿写的核心原则**:
+- **仿写 = 学习技法 + 原创超越**：从源文学习怎么写（节奏、密度、技法），用自己的文字写得更好
+- **学源文的"怎么写"，不抄源文的"写了什么"**：模仿描写密度和文风节奏，但句子、对话、环境细节全部原创
+- **优于原文**：源文描写用了N个维度，你要用N+1个维度。源文写了动作，你加上感官和潜台词
+- **不要换名抄袭**：不能把源文的句子换个人名就用
+
+**章节生成流程（严格遵循，每章仅4步！）**:
+1. `read_source_chapter(chapter=N)` → 精读源文，学习写作技法（描写密度、文风、人物刻画手法）
+2. `get_generation_context(chapter=N)` → 获取本章**改编计划**（情节主线）+角色映射+金手指+氛围DNA+前文摘要
+3. 以**改编计划为情节主线**，以**源文技法为质量标杆**，用原创文字写出优于源文的章节
+4. `save_chapter(chapter=N, content=..., summary=..., title=...)` → 保存后直接回复用户
+
+**save_chapter 之后立即回复用户，不要再调用任何工具。**
+
+**严禁操作**:
+- `ls` / `index_source` / `get_analysis` / `read_file`
+- `remember` — 摘要已通过 summary 参数保存
+- `write_todos` — 不需要待办管理
 
 **文件操作**:
 - 项目文件在当前工作目录（虚拟路径以 `/` 开头）
-- 源小说在 `/source/` 目录
-- 分析结果在 `/analysis/` 目录
-- 生成章节在 `/chapters/` 目录
-- 使用 `read_file` / `write_file` / `edit_file` 操作文件
-- 禁止使用 shell 命令进行文件操作
-
-### Human-in-the-Loop Tool Approval
-
-某些工具调用需要用户批准。当工具调用被拒绝时:
-1. 立即接受用户的决定
-2. 建议替代方案或询问澄清
-3. 不要重试相同的被拒绝命令
+- 源小说在 `/source/` 目录，分析在 `/analysis/`，章节在 `/chapters/`
 """
