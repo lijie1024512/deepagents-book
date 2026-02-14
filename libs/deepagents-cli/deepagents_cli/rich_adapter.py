@@ -62,22 +62,12 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
 
 def print_welcome(version: str = "0.0.13a2") -> None:
     """Print welcome banner."""
-    banner = """
-[bold green]╔═══════════════════════════════════════════════════════════╗
-║                                                           ║
-║     █████╗  ██████╗ ███████╗███╗   ██╗████████╗███████╗  ║
-║    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝██╔════╝  ║
-║    ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ███████╗  ║
-║    ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ╚════██║  ║
-║    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ███████║  ║
-║    ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚══════╝  ║
-║                                                           ║
-╚═══════════════════════════════════════════════════════════╝[/bold green]
+    banner = """[bold green]李小胖[/bold green]
 """
     console.print(banner)
     console.print(f"[dim]v{version}[/dim]")
     console.print()
-    console.print("[green]Ready to code![/green] What would you like to build?")
+    console.print("[green]您好,我是小胖的小说私人助手小鹿,有什么可以为您做的吗?[/green]")
     console.print("[dim]Enter send • Ctrl+J newline • @ files • / commands[/dim]")
     console.print()
 

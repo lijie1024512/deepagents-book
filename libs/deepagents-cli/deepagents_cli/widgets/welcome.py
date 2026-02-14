@@ -40,6 +40,6 @@ class WelcomeBanner(Static):
             )
             banner_text += f"[green]✓[/green] LangSmith tracing: [cyan]'{project}'[/cyan]\n"
 
-        banner_text += "[#10b981]Ready to code! What would you like to build?[/#10b981]\n"
+        banner_text += "[#10b981]您好,我是小胖的小说私人助手小鹿,有什么可以为您做的吗?[/#10b981]\n"
         banner_text += "[dim]Enter send • Ctrl+J newline • @ files • / commands[/dim]"
         super().__init__(banner_text, **kwargs)
