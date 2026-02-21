@@ -871,8 +871,9 @@ def _imitate_init(
     if file_size == 0:
         console.print("[bold red]错误:[/bold red] 源文件为空")
         return
-    if file_size > 10 * 1024 * 1024:  # 10MB limit
-        console.print("[bold red]错误:[/bold red] 源文件过大（超过10MB）")
+    if file_size > 20 * 1024 * 1024:  # 50MB limit
+        console.print("[bold red]错误:[/bold red] 源文件过大（超过50MB）")
+        console.print(f"[dim]当前文件大小: {file_size / 1024 / 1024:.1f}MB[/dim]")
         return
 
     # Determine project path
