@@ -378,7 +378,7 @@ def _launch_conversation_session(project: NovelProject, initial_prompt: str):
     import asyncio
 
     from deepagents_cli.agent import create_novel_agent
-    from deepagents_cli.config import create_model, settings as cli_settings
+    from deepagents_cli.config import create_model
     from deepagents_cli.sessions import get_checkpointer
     from deepagents_cli.tools import fetch_url, http_request, web_search
 
@@ -393,10 +393,8 @@ def _launch_conversation_session(project: NovelProject, initial_prompt: str):
         model = create_model(None)  # Use default model
 
         async with get_checkpointer() as checkpointer:
-            # Prepare tools
-            tools = [http_request, fetch_url]
-            if cli_settings.has_tavily:
-                tools.append(web_search)
+            # Prepare tools (web_search has DuckDuckGo fallback, always available)
+            tools = [http_request, fetch_url, web_search]
 
             try:
                 # Create novel-specific agent
@@ -1070,9 +1068,9 @@ def _launch_imitate_session(project: NovelProject, initial_prompt: str) -> None:
     import asyncio
 
     from deepagents_cli.agent import create_imitate_agent
-    from deepagents_cli.config import create_model, settings as cli_settings
+    from deepagents_cli.config import create_model
     from deepagents_cli.sessions import get_checkpointer
-    from deepagents_cli.tools import fetch_url, http_request, web_search
+    from deepagents_cli.tools import fetch_url, http_request
 
     console.print("[dim]正在启动仿写会话...[/dim]")
     console.print("[dim]输入 /help 查看帮助，Ctrl+C 退出[/dim]\n")
@@ -1082,9 +1080,8 @@ def _launch_imitate_session(project: NovelProject, initial_prompt: str) -> None:
         model = create_model(None)
 
         async with get_checkpointer() as checkpointer:
+            # 仿写用 search_source 做源文 RAG，不需要 web_search
             tools = [http_request, fetch_url]
-            if cli_settings.has_tavily:
-                tools.append(web_search)
 
             try:
                 agent, backend = create_imitate_agent(

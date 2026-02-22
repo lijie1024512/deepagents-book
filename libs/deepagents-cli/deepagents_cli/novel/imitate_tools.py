@@ -334,11 +334,19 @@ def read_source_chapter(chapter: int) -> str:
     title = ch_info.title if ch_info else f"第{chapter}章"
     char_count = ch_info.char_count if ch_info else len(text)
     return (
+        f"{'=' * 60}\n"
+        f"⚠️ 以下源文仅供学习写作技法，严禁复制任何原文句子！\n"
+        f"{'=' * 60}\n\n"
         f"=== {title} ({char_count:,}字) ===\n\n{text}\n\n"
-        f"---\n"
-        f"【精读要点】学习源文的写作技法（文风节奏、描写密度、人物刻画手法），\n"
-        f"然后用原创文字写出质量优于原文的改编章节。\n"
-        f"学源文的'怎么写'，不抄源文的'写了什么'。"
+        f"{'=' * 60}\n"
+        f"⚠️ 仿写铁律（违反任何一条都是抄袭）：\n"
+        f"1. 禁止复制源文的句子——哪怕只是换个人名也是抄袭\n"
+        f"2. 禁止照搬源文的场景顺序——你必须按【改编计划】的场景来写\n"
+        f"3. 禁止使用源文的描写原句——你要用改编计划里的新世界观元素重新描写\n"
+        f"4. 源文只是技法老师：学它的描写密度、文风节奏、刻画手法\n"
+        f"5. 你的内容必须来自改编计划：新角色、新金手指、新剧情事件\n"
+        f"6. 青出于蓝胜于蓝：源文N个描写维度，你要N+1个维度，质量必须超越源文\n"
+        f"{'=' * 60}"
     )
 
 
@@ -500,14 +508,40 @@ def get_analysis(key: str) -> str:
 # ---------------------------------------------------------------------------
 # Tool 7: Save generated chapter
 # ---------------------------------------------------------------------------
+def _strip_markdown_formatting(text: str) -> str:
+    """Strip markdown inline formatting from text for clean Word output.
+
+    Removes bold (**text** / __text__), italic (*text* / _text_),
+    and bold-italic (***text***) markers while preserving the inner text.
+
+    Args:
+        text: The text to clean.
+
+    Returns:
+        Text with markdown inline formatting removed.
+    """
+    import re
+
+    # Bold-italic (***text*** or ___text___)
+    text = re.sub(r'\*{3}(.+?)\*{3}', r'\1', text)
+    text = re.sub(r'_{3}(.+?)_{3}', r'\1', text)
+    # Bold (**text** or __text__)
+    text = re.sub(r'\*{2}(.+?)\*{2}', r'\1', text)
+    text = re.sub(r'_{2}(.+?)_{2}', r'\1', text)
+    # Italic (*text*) — avoid matching math like 2*3
+    text = re.sub(r'(?<![0-9*])\*([^\s*][^*]*?[^\s*])\*(?![0-9*])', r'\1', text)
+    text = re.sub(r'(?<![0-9*])\*([^\s*])\*(?![0-9*])', r'\1', text)
+    return text
+
+
 @tool
 def save_chapter(chapter: int, content: str, summary: str = "", title: str = "") -> str:
-    """保存生成的章节内容和摘要。
+    """保存生成的章节内容和摘要。必须一次性提供content和summary，不要分两次调用。
 
     Args:
         chapter: 章节编号。
-        content: 章节正文内容。
-        summary: 章节摘要（用于后续章节的前文回顾）。如果省略，章节仍会保存，但请尽量提供。
+        content: 章节正文内容（纯文本，不含Markdown格式符号）。
+        summary: 章节摘要（用于后续章节的前文回顾）。请务必一次性提供，不要省略。
         title: 章节标题（可选）。
 
     Returns:
@@ -516,6 +550,9 @@ def save_chapter(chapter: int, content: str, summary: str = "", title: str = "")
     db = _get_db()
     if db is None:
         return "错误：无法访问数据库。"
+
+    # Strip any markdown formatting for clean Word-compatible output
+    content = _strip_markdown_formatting(content)
 
     with db._connection() as conn:
         conn.execute(
@@ -529,17 +566,16 @@ def save_chapter(chapter: int, content: str, summary: str = "", title: str = "")
         chapter_dir = _imitate_project_path / "chapters"
         chapter_dir.mkdir(parents=True, exist_ok=True)
         chapter_file = chapter_dir / f"chapter-{chapter:03d}.md"
-        header = f"# 第{chapter}章" + (f" {title}" if title else "") + "\n\n"
+        header = f"第{chapter}章" + (f" {title}" if title else "") + "\n\n"
         chapter_file.write_text(header + content, encoding="utf-8")
 
-    warning = ""
+    summary_note = ""
     if not summary:
-        warning = "\n⚠️ 未提供章节摘要。请再调用一次 save_chapter 补充 summary，否则后续章节生成时缺少前文回顾。"
+        summary_note = "\n（提示：本次未提供摘要，后续章节的前文回顾可能不完整。下次生成时请在同一次调用中提供summary参数。）"
 
     return (
-        f"第{chapter}章保存成功。已生成: {generated_count} 章{warning}\n\n"
-        f"✅ 章节摘要已自动保存到数据库，后续章节的 get_generation_context 会自动获取。\n"
-        f"→ 请直接向用户汇报完成情况，不需要再调用 remember、write_todos 等工具。"
+        f"第{chapter}章保存成功（{len(content)}字）。已生成: {generated_count} 章。{summary_note}\n"
+        f"→ 章节已保存完毕，请直接向用户汇报完成情况，不要再调用任何工具。"
     )
 
 
@@ -602,8 +638,8 @@ def _extract_chapter_plan(plan_text: str, chapter: int) -> str | None:
 def get_generation_context(chapter: int) -> str:
     """获取指定章节的生成上下文。
 
-    包括：源小说对应章节原文（作为风格参考）、改编计划、前文摘要。
-    源小说原文是最重要的部分——Agent应直接模仿其文风来写。
+    包括：改编计划、角色映射、金手指设定、世界观氛围、前文摘要。
+    不包含源文原文（已通过 read_source_chapter 单独阅读，避免重复占用 token）。
 
     Args:
         chapter: 要生成的章节编号。
@@ -617,28 +653,10 @@ def get_generation_context(chapter: int) -> str:
 
     parts = [f"=== 第{chapter}章 生成上下文 ==="]
 
-    # 1. Source chapter text (THE KEY REFERENCE for style imitation)
-    source_path = _get_source_path()
-    index = _get_source_index()
-    if source_path and index and index.chapters and chapter <= len(index.chapters):
-        try:
-            source_text = load_chapter_text(source_path, index, chapter)
-            # Truncate if very long — keep enough text for style immersion
-            max_ref_chars = 10000
-            if len(source_text) > max_ref_chars:
-                # Try to cut at a paragraph boundary
-                cut_region = source_text[max_ref_chars - 500 : max_ref_chars]
-                last_para = cut_region.rfind("\n\n")
-                if last_para != -1:
-                    cut_pos = max_ref_chars - 500 + last_para
-                else:
-                    cut_pos = max_ref_chars
-                source_text = source_text[:cut_pos] + f"\n\n...(已截取前{cut_pos}字作为风格参考，原文共{len(source_text)}字)"
-            parts.extend(["", f"## 源小说第{chapter}章原文（风格参考）", source_text])
-        except ValueError:
-            pass
+    # NOTE: 源文原文不在此处重复提供。AI 已通过 read_source_chapter 阅读过源文，
+    # 此处只提供改编计划、角色映射等创作指导信息。
 
-    # 2. Adaptation plan for this chapter (if saved)
+    # 1. Adaptation plan for this chapter (if saved)
     with db._connection() as conn:
         row = conn.execute(
             "SELECT content FROM imitate_analysis WHERE key='adaptation_plan'"

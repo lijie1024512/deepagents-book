@@ -93,8 +93,9 @@ def web_search(
     topic: Literal["general", "news", "finance"] = "general",
     include_raw_content: bool = False,
 ):
-    """Search the web using Tavily for current information and documentation.
+    """Search the web for current information and documentation.
 
+    Uses Tavily if API key is configured, otherwise falls back to DuckDuckGo (free).
     This tool searches the web and returns relevant results. After receiving results,
     you MUST synthesize the information into a natural, helpful response for the user.
 
@@ -120,21 +121,36 @@ def web_search(
     4. Cite sources by mentioning the page titles or URLs
     5. NEVER show the raw JSON to the user - always provide a formatted response
     """
-    if tavily_client is None:
-        return {
-            "error": "Tavily API key not configured. Please set TAVILY_API_KEY environment variable.",
-            "query": query,
-        }
+    if tavily_client is not None:
+        try:
+            return tavily_client.search(
+                query,
+                max_results=max_results,
+                include_raw_content=include_raw_content,
+                topic=topic,
+            )
+        except Exception as e:
+            return {"error": f"Tavily search error: {e!s}", "query": query}
 
+    # Fallback: DuckDuckGo (no API key required)
     try:
-        return tavily_client.search(
-            query,
-            max_results=max_results,
-            include_raw_content=include_raw_content,
-            topic=topic,
-        )
+        from duckduckgo_search import DDGS
+
+        with DDGS() as ddgs:
+            raw_results = list(ddgs.text(query, max_results=max_results))
+
+        results = [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "content": r.get("body", ""),
+            }
+            for r in raw_results
+        ]
     except Exception as e:
-        return {"error": f"Web search error: {e!s}", "query": query}
+        return {"error": f"DuckDuckGo search error: {e!s}", "query": query}
+    else:
+        return {"results": results, "query": query}
 
 
 def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:

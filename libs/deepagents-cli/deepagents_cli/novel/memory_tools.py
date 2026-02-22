@@ -22,11 +22,36 @@ Storage backends:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import tool
+
+
+def _strip_markdown_formatting(text: str) -> str:
+    """Strip markdown inline formatting from text for clean Word output.
+
+    Removes bold (**text** / __text__), italic (*text* / _text_),
+    and bold-italic (***text***) markers while preserving the inner text.
+
+    Args:
+        text: The text to clean.
+
+    Returns:
+        Text with markdown inline formatting removed.
+    """
+    # Bold-italic (***text*** or ___text___)
+    text = re.sub(r'\*{3}(.+?)\*{3}', r'\1', text)
+    text = re.sub(r'_{3}(.+?)_{3}', r'\1', text)
+    # Bold (**text** or __text__)
+    text = re.sub(r'\*{2}(.+?)\*{2}', r'\1', text)
+    text = re.sub(r'_{2}(.+?)_{2}', r'\1', text)
+    # Italic (*text*) — avoid matching math like 2*3
+    text = re.sub(r'(?<![0-9*])\*([^\s*][^*]*?[^\s*])\*(?![0-9*])', r'\1', text)
+    text = re.sub(r'(?<![0-9*])\*([^\s*])\*(?![0-9*])', r'\1', text)
+    return text
 
 if TYPE_CHECKING:
     from deepagents_cli.novel.database import NovelDatabase
@@ -1473,8 +1498,11 @@ def complete_chapter(
     if project is None:
         return "错误：无法访问项目状态。请确保已正确初始化项目。"
 
+    # Strip markdown formatting for clean Word-compatible output
+    content = _strip_markdown_formatting(content)
+
     # 1. Save chapter content
-    chapter_header = f"# 第{chapter}章"
+    chapter_header = f"第{chapter}章"
     if title:
         chapter_header += f" {title}"
     chapter_header += "\n\n"

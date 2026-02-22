@@ -147,10 +147,14 @@ class ImitateMemoryMiddleware(AgentMiddleware):
             parts.append(
                 "【仿写工具速查】\n"
                 "- 索引: index_source\n"
-                "- 阅读: read_source_chapter / read_source_range / search_source\n"
+                "- 阅读: read_source_range（批量读多章）/ read_source_chapter（单章精读）/ search_source\n"
                 "- 分析: save_analysis / get_analysis\n"
                 "- 生成: get_generation_context / save_chapter\n"
-                "- 状态: get_project_status"
+                "- 状态: get_project_status\n\n"
+                "【⚠️ 工具调用效率规则】\n"
+                "- 读多章时用 read_source_range(1, 3) 一次读取，禁止对每章分别调用 read_source_chapter\n"
+                "- write_todos 整个分析流程最多调1次（开头规划时），不要每步都更新\n"
+                "- 尽量合并工具调用，减少不必要的轮次"
             )
         else:
             # Generation: ONLY inject generation guide — keep context focused
@@ -164,15 +168,20 @@ class ImitateMemoryMiddleware(AgentMiddleware):
                 "1. read_source_chapter(chapter=N) → 精读源文，学习写作技法（描写密度/文风/人物刻画）\n"
                 "2. get_generation_context(chapter=N) → 获取改编计划+角色映射+金手指+氛围DNA+前文摘要\n"
                 "3. 结合技法+改编计划，原创写作 → save_chapter(chapter=N, content=..., summary=..., title=...)\n\n"
-                "save_chapter 之后直接向用户汇报完成情况。\n\n"
+                "⚠️ save_chapter 必须一次性提供 content 和 summary，不要分两次调用！\n"
+                "⚠️ save_chapter 之后直接向用户汇报完成情况，不要再调用任何工具！\n\n"
+                "【⚠️ 正文格式要求】\n"
+                "- 正文必须是纯文本，禁止使用任何Markdown格式符号\n"
+                "- 不要使用 **粗体**、*斜体*、# 标题、- 列表等Markdown语法\n"
+                "- 对话使用中文引号（""），段落之间用空行分隔\n"
+                "- 不要在content中包含章节标题（save_chapter会自动生成）\n\n"
                 "【⚠️ 仿写核心原则】\n"
                 "- 学源文的'怎么写'（技法），不抄源文的'写了什么'（内容）\n"
                 "- 质量优于原文：源文N个描写维度，你要N+1个维度\n"
                 "- 不要换名抄袭：不能把源文句子换个人名就用\n\n"
                 "【严禁以下操作】\n"
                 "- 不要调用 ls、index_source、get_analysis、read_file\n"
-                "- 不要在 save_chapter 之后调用 remember（摘要已自动保存）\n"
-                "- 不要调用 write_todos（单章生成不需要待办列表）\n"
+                "- 不要在 save_chapter 之后调用任何工具（remember、write_todos等全部禁止）\n"
                 "- get_generation_context 已包含所有必要信息，不需要额外获取"
             )
 
