@@ -11,6 +11,7 @@ Follows the same pattern as NovelMemoryMiddleware.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone, timedelta
@@ -79,6 +80,62 @@ class ImitateMemoryMiddleware(AgentMiddleware):
         self._skill_cache[skill_name] = content
         return content
 
+    def _load_skill_references(self, skill_content: str) -> str:
+        """Load inject_references from a skill's frontmatter.
+
+        Adapted from NovelMemoryMiddleware._load_phase_references().
+
+        Args:
+            skill_content: The full SKILL.md content with YAML frontmatter
+
+        Returns:
+            Concatenated reference file contents, or empty string.
+        """
+        refs = self._parse_inject_references(skill_content)
+        if not refs:
+            return ""
+
+        skills_dir = Path(__file__).parent.parent / "skills"
+        parts: list[str] = []
+        for ref in refs:
+            for skill_dir in skills_dir.iterdir():
+                ref_path = skill_dir / ref
+                if ref_path.exists():
+                    with contextlib.suppress(OSError):
+                        parts.append(ref_path.read_text(encoding="utf-8"))
+                    break
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _parse_inject_references(skill_content: str) -> list[str]:
+        """Parse inject_references list from SKILL.md YAML frontmatter."""
+        if not skill_content.startswith("---"):
+            return []
+
+        try:
+            end_idx = skill_content.index("---", 3)
+        except ValueError:
+            return []
+        frontmatter = skill_content[3:end_idx]
+
+        refs: list[str] = []
+        in_refs = False
+        for line in frontmatter.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("inject_references:"):
+                val = stripped[len("inject_references:"):].strip()
+                if val == "[]":
+                    return []
+                in_refs = True
+                continue
+            if in_refs:
+                if stripped.startswith("- "):
+                    refs.append(stripped[2:].strip())
+                elif not stripped.startswith("#") and stripped:
+                    in_refs = False
+        return refs
+
     def _detect_phase(self) -> str:
         """Detect current project phase from database state.
 
@@ -140,6 +197,10 @@ class ImitateMemoryMiddleware(AgentMiddleware):
             orchestrator = self._load_skill_file("novel-imitate-orchestrator")
             if orchestrator:
                 parts.append(f"\n{orchestrator}")
+                # Load reference files (golden finger patterns etc.)
+                refs = self._load_skill_references(orchestrator)
+                if refs:
+                    parts.append(f"\n{refs}")
             generation = self._load_skill_file("novel-imitate-generation")
             if generation:
                 parts.append(f"\n{generation}")
