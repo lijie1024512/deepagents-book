@@ -197,10 +197,11 @@ class ImitateMemoryMiddleware(AgentMiddleware):
             orchestrator = self._load_skill_file("novel-imitate-orchestrator")
             if orchestrator:
                 parts.append(f"\n{orchestrator}")
-                # Load reference files (golden finger patterns etc.)
-                refs = self._load_skill_references(orchestrator)
-                if refs:
-                    parts.append(f"\n{refs}")
+                # References only after source overview is confirmed (agent is ready to design)
+                if "source_overview" in analysis_keys_list:
+                    refs = self._load_skill_references(orchestrator)
+                    if refs:
+                        parts.append(f"\n{refs}")
             generation = self._load_skill_file("novel-imitate-generation")
             if generation:
                 parts.append(f"\n{generation}")
