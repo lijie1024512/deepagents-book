@@ -9,7 +9,6 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
-from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
@@ -429,12 +428,10 @@ def create_cli_agent(
             agent_md.write_text(source_content)
 
     # Skills directories (if enabled)
-    skills_dir = None
-    project_skills_dir = None
     builtin_skills_dir = None
     if enable_skills:
-        skills_dir = settings.ensure_user_skills_dir(assistant_id)
-        project_skills_dir = settings.get_project_skills_dir()
+        settings.ensure_user_skills_dir(assistant_id)
+        settings.get_project_skills_dir()
         builtin_skills_dir = settings.get_builtin_skills_dir()
         # Auto-extract .skill files in builtin skills directory
         extract_builtin_skills()
@@ -444,14 +441,12 @@ def create_cli_agent(
 
     # Add prompt optimizer middleware (should run early to optimize prompts before processing)
     # This ensures prompts are optimized before write_todos or other operations
-    # marker_mode=True (默认): 只有用户使用 @优化 或 @opt 标记时才触发优化
-    # 示例: "@优化 帮我写个海贼王同人小说"
     agent_middleware.append(PromptOptimizerMiddleware(marker_mode=True, auto_optimize=False))
 
     # Add memory middleware
     if enable_memory:
         # Create factory function for memory backend with Windows path support
-        def create_memory_backend(runtime):
+        def create_memory_backend(runtime: object) -> CompositeBackend | StateBackend:
             routes = {}
 
             # 用户 memory 文件
@@ -476,9 +471,7 @@ def create_cli_agent(
             # 创建 CompositeBackend
             if routes:
                 return CompositeBackend(default=StateBackend(runtime), routes=routes)
-            else:
-                # 如果没有 routes，使用 StateBackend
-                return StateBackend(runtime)
+            return StateBackend(runtime)
 
         # 获取 memory sources（虚拟路径）
         memory_sources = []
@@ -497,25 +490,20 @@ def create_cli_agent(
             )
 
     # Add skills middleware
-    if enable_skills:
-        # 统一使用内置技能目录，所有技能都在 libs/deepagents-cli/deepagents_cli/skills 管理
-        if builtin_skills_dir and builtin_skills_dir.exists():
+    if enable_skills and builtin_skills_dir and builtin_skills_dir.exists():
 
-            def create_skills_backend(runtime):
-                # 创建指向技能目录的 backend
-                skills_backend = FilesystemBackend(
-                    root_dir=str(builtin_skills_dir), virtual_mode=True
-                )
-                return CompositeBackend(
-                    default=StateBackend(runtime), routes={"/skills/": skills_backend}
-                )
-
-            agent_middleware.append(
-                SkillsMiddleware(
-                    backend=create_skills_backend,
-                    sources=["/skills/"],
-                )
+        def create_skills_backend(runtime: object) -> CompositeBackend:
+            skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
+            return CompositeBackend(
+                default=StateBackend(runtime), routes={"/skills/": skills_backend}
             )
+
+        agent_middleware.append(
+            SkillsMiddleware(
+                backend=create_skills_backend,
+                sources=["/skills/"],
+            )
+        )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
@@ -567,7 +555,7 @@ def create_cli_agent(
     # Add skills route to main backend so file tools can access skill files
     # Note: CompositeBackend routes need backend instances, not factory functions
     # We'll create a factory function for the composite backend itself
-    def create_composite_backend_with_skills(runtime):
+    def create_composite_backend_with_skills(runtime: object) -> CompositeBackend:
         """Factory function to create CompositeBackend with skills route."""
         routes = {}
         if enable_skills and builtin_skills_dir and builtin_skills_dir.exists():
@@ -730,7 +718,7 @@ def create_novel_agent(
         interrupt_on = _add_interrupt_on()
 
     # Create composite backend with skills route
-    def create_novel_composite_backend(runtime):
+    def create_novel_composite_backend(_runtime: object) -> CompositeBackend:
         routes = {}
         if builtin_skills_dir and builtin_skills_dir.exists():
             skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
@@ -770,8 +758,6 @@ def _get_novel_system_prompt(
     Returns:
         System prompt string
     """
-    agent_dir_path = str(settings.user_deepagents_dir / assistant_id)
-
     return f"""### 小说创作会话
 
 你正在帮助用户创作小说《{project_title}》。
@@ -827,7 +813,7 @@ def create_imitate_agent(
     """
     from deepagents_cli.novel.imitate_middleware import ImitateMemoryMiddleware
     from deepagents_cli.novel.imitate_tools import get_all_imitate_tools, init_imitate_store
-    from deepagents_cli.novel.memory_tools import remember, recall, forget
+    from deepagents_cli.novel.memory_tools import forget, recall, remember
     from deepagents_cli.novel.project import NovelProject
 
     tools = list(tools) if tools else []
@@ -888,12 +874,15 @@ def create_imitate_agent(
     else:
         interrupt_on = _add_interrupt_on()
 
-    # Composite backend with skills route
-    def create_imitate_composite_backend(runtime):
+    # Composite backend with skills + history routes
+    def create_imitate_composite_backend(_runtime: object) -> CompositeBackend:
+        from deepagents_cli.novel.imitate_history_backend import ImitateHistoryBackend
+
         routes = {}
         if builtin_skills_dir and builtin_skills_dir.exists():
             skills_backend = FilesystemBackend(root_dir=str(builtin_skills_dir), virtual_mode=True)
             routes["/skills/"] = skills_backend
+        routes["/history/"] = ImitateHistoryBackend()
         return CompositeBackend(default=project_backend, routes=routes)
 
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
@@ -933,28 +922,54 @@ def _get_imitate_system_prompt(
 - 项目路径: {project_path}
 
 **你的角色**:
-你是一位专业的小说作家。你精读源小说学习其写作技法（文风、描写密度、人物刻画、氛围营造），然后结合改编计划用原创文字写出质量优于原文的章节。
+你是一位专业的小说作家兼改编顾问。精读源小说、分析写作技法，向用户提出改编方向建议，经用户确认后用原创文字写出质量优于原文的章节。
 
-**⚠️ 仿写的核心原则**:
-- **仿写 = 学习技法 + 原创超越**：从源文学习怎么写（节奏、密度、技法），用自己的文字写得更好
-- **学源文的"怎么写"，不抄源文的"写了什么"**：模仿描写密度和文风节奏，但句子、对话、环境细节全部原创
-- **优于原文**：源文描写用了N个维度，你要用N+1个维度。源文写了动作，你加上感官和潜台词
-- **不要换名抄袭**：不能把源文的句子换个人名就用
+**核心原则**:
+- 学源文的"怎么写"（技法），不抄源文的"写了什么"（内容）
+- 源文 N 个描写维度，你要 N+1 个维度
+- 禁止换名抄袭
+- 每章写之前先和用户确认改编方向，不要闷头就写
 
-**章节生成流程（严格遵循，每章仅4步！）**:
-1. `read_source_chapter(chapter=N)` → 精读源文，学习写作技法（描写密度、文风、人物刻画手法）
-2. `get_generation_context(chapter=N)` → 获取本章**改编计划**（情节主线）+角色映射+金手指+氛围DNA+前文摘要
-3. 以**改编计划为情节主线**，以**源文技法为质量标杆**，用原创文字写出优于源文的章节
-4. `save_chapter(chapter=N, content=..., summary=..., title=...)` → 保存后直接回复用户
+**章节生成流程（每章 7 步）**:
 
-**save_chapter 之后立即回复用户，不要再调用任何工具。**
+*第一阶段：分析与决策（与用户协作）*
+1. `read_source_chapter(chapter=N)` → 精读源文
+2. 向用户输出**源文章节概述**：
+   - 本章主要事件和情节脉络
+   - 写作技法提取（对话节奏、描写手法、场景转换方式）
+   - 情绪节奏（如：压抑→小爆发→舒缓→高潮→余韵）
+   - 爽点位置和类型（如：@1200字 发现型爽点）
+3. `get_generation_context(chapter=N)` → 获取改编计划+角色演化+金手指状态+前文脉络
+4. 结合源文概述+改编上下文，向用户提出**2-3个改编方向**（详见下方格式）
+5. **等待用户选择**。用户可能选择某个方向，也可能补充自己的想法。将用户的补充融入选定方向。
 
-**严禁操作**:
-- `ls` / `index_source` / `get_analysis` / `read_file`
-- `remember` — 摘要已通过 summary 参数保存
-- `write_todos` — 不需要待办管理
+*第二阶段：写作与记录*
+6. 按选定方向写作 → `save_chapter(chapter=N, content=..., summary=..., title=...)`
+7. 记录创新 → `evolve_character` / `evolve_golden_finger` / `log_creative_choice`
+
+**改编方向建议格式**（步骤4）:
+每个方向应包含：
+- 核心改动：和原计划的关系（沿用/调整/替换），本方向的核心创意
+- 场景拆分：3-5个场景的简述（每场景1-2句，含字数预估）
+- 技法应用：从源文提取的哪些技法会用在哪个场景
+- 爽点设计：本方向的爽点位置和类型
+- 角色表现：主要角色在本方向中的行为和变化
+- 金手指运用：金手指在本章怎么展现/演化
+
+**正文格式**: 纯文本，禁止 Markdown。中文引号（""），段落用空行分隔。
+
+**可用创作技能**（需要时用 read_file 阅读）:
+- 写作技法指南 → /skills/novel-imitate-generation/SKILL.md
+- 创新方法论 → /skills/novel-imitate-innovation/SKILL.md
 
 **文件操作**:
 - 项目文件在当前工作目录（虚拟路径以 `/` 开头）
 - 源小说在 `/source/` 目录，分析在 `/analysis/`，章节在 `/chapters/`
+
+**历史记录**（通过 read_file 按需访问）:
+- 项目进度概览 → /history/overview.md
+- 某章完整记录 → /history/chapter-{{N}}.md（含正文+角色演化+金手指+创意偏离）
+- 角色演化轨迹 → /history/characters.md
+- 金手指演化 → /history/golden-finger.md
+- 创意偏离日志 → /history/creative-log.md
 """

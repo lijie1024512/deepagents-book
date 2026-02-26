@@ -57,9 +57,34 @@ def detect_waterfall_writing(text: str) -> list[QualityIssue]:
         consecutive_narrative = 0
         for sent in sentences:
             # 简单判断：如果句子没有感官词汇、没有情感词汇，视为纯叙述
-            sensory_words = ["看", "听", "闻", "尝", "触", "感觉", "冷", "热", "痛", "响", "味", "光", "暗"]
-            emotion_words = ["心", "想", "觉得", "感到", "害怕", "兴奋", "紧张", "愤怒", "期待", "担忧"]
-            dialogue_pattern = r"["「『].*?["」』]"
+            sensory_words = [
+                "看",
+                "听",
+                "闻",
+                "尝",
+                "触",
+                "感觉",
+                "冷",
+                "热",
+                "痛",
+                "响",
+                "味",
+                "光",
+                "暗",
+            ]
+            emotion_words = [
+                "心",
+                "想",
+                "觉得",
+                "感到",
+                "害怕",
+                "兴奋",
+                "紧张",
+                "愤怒",
+                "期待",
+                "担忧",
+            ]
+            dialogue_pattern = r'["「『].*?["」』]'
 
             has_sensory = any(word in sent for word in sensory_words)
             has_emotion = any(word in sent for word in emotion_words)
@@ -103,7 +128,7 @@ def detect_dialogue_issues(text: str) -> list[QualityIssue]:
     issues = []
 
     # 匹配对话
-    dialogue_pattern = r"["「『]([^"」』]*?)["」』]"
+    dialogue_pattern = r'["「『]([^"」』]*?)["」』]'
     dialogues = re.findall(dialogue_pattern, text)
 
     # 检测连续对话（没有动作/神态描写）
@@ -111,12 +136,12 @@ def detect_dialogue_issues(text: str) -> list[QualityIssue]:
     consecutive_dialogues = 0
 
     for i, line in enumerate(lines):
-        line = line.strip()
-        if not line:
+        stripped_line = line.strip()
+        if not stripped_line:
             consecutive_dialogues = 0
             continue
 
-        has_dialogue = bool(re.search(dialogue_pattern, line))
+        has_dialogue = bool(re.search(dialogue_pattern, stripped_line))
         # 简单判断是否有动作描写
         action_words = [
             "说",
@@ -137,7 +162,7 @@ def detect_dialogue_issues(text: str) -> list[QualityIssue]:
             "抬",
             "低",
         ]
-        has_action = any(word in line for word in action_words)
+        has_action = any(word in stripped_line for word in action_words)
 
         if has_dialogue:
             if not has_action:
@@ -265,7 +290,13 @@ def check_quality(text: str, file_path: str = "未知文件") -> QualityReport:
     total_chars = len(text)
     total_paragraphs = len([p for p in text.split("\n\n") if p.strip()])
 
-    return QualityReport(file_path=file_path, total_chars=total_chars, total_paragraphs=total_paragraphs, issues=issues, score=score)
+    return QualityReport(
+        file_path=file_path,
+        total_chars=total_chars,
+        total_paragraphs=total_paragraphs,
+        issues=issues,
+        score=score,
+    )
 
 
 def format_report(report: QualityReport) -> str:
@@ -274,7 +305,7 @@ def format_report(report: QualityReport) -> str:
 
     lines.append("# 正文质量检查报告")
     lines.append("")
-    lines.append(f"## 基本信息")
+    lines.append("## 基本信息")
     lines.append(f"- 文件：{report.file_path}")
     lines.append(f"- 总字数：{report.total_chars}")
     lines.append(f"- 总段落数：{report.total_paragraphs}")

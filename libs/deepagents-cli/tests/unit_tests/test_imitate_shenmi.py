@@ -16,6 +16,7 @@ import pytest
 
 from deepagents_cli.novel.database import NovelDatabase
 from deepagents_cli.novel.imitate_tools import (
+    _build_skill_library_prompt,
     _get_db,
     get_analysis,
     get_generation_context,
@@ -23,6 +24,7 @@ from deepagents_cli.novel.imitate_tools import (
     index_source,
     read_source_chapter,
     read_source_range,
+    record_writing_skill,
     save_analysis,
     save_chapter,
     search_source,
@@ -32,7 +34,9 @@ from deepagents_cli.novel.imitate_tools import (
 # ---------------------------------------------------------------------------
 # 源小说路径（需要实际文件存在才能运行）
 # ---------------------------------------------------------------------------
-SOURCE_NOVEL = Path(__file__).resolve().parents[4] / "novels" / "神秘之旅改编" / "source" / "神秘之旅.txt"
+SOURCE_NOVEL = (
+    Path(__file__).resolve().parents[4] / "novels" / "神秘之旅改编" / "source" / "神秘之旅.txt"
+)
 
 # 索引大文件需要较长时间（~30s for 9.8MB GBK file）
 INDEX_TIMEOUT = 120
@@ -647,7 +651,9 @@ class TestAdaptationProposals:
 
     def test_save_proposals(self, shenmi_project):
         """应成功保存方案推荐。"""
-        result = save_analysis.invoke({"key": "adaptation_proposals", "content": ADAPTATION_PROPOSALS})
+        result = save_analysis.invoke(
+            {"key": "adaptation_proposals", "content": ADAPTATION_PROPOSALS}
+        )
         assert "保存成功" in result
 
     def test_proposals_exported_to_file(self, shenmi_project):
@@ -859,23 +865,27 @@ class TestChapter1Generation:
 
     def test_save_chapter1(self, shenmi_project):
         """应成功保存仿写第1章。"""
-        result = save_chapter.invoke({
-            "chapter": 1,
-            "content": CHAPTER_1_CONTENT,
-            "summary": CHAPTER_1_SUMMARY,
-            "title": "觉醒",
-        })
+        result = save_chapter.invoke(
+            {
+                "chapter": 1,
+                "content": CHAPTER_1_CONTENT,
+                "summary": CHAPTER_1_SUMMARY,
+                "title": "觉醒",
+            }
+        )
         assert "保存成功" in result
         assert "1" in result
 
     def test_chapter1_file_on_disk(self, shenmi_project):
         """第1章应写入磁盘文件。"""
-        save_chapter.invoke({
-            "chapter": 1,
-            "content": CHAPTER_1_CONTENT,
-            "summary": CHAPTER_1_SUMMARY,
-            "title": "觉醒",
-        })
+        save_chapter.invoke(
+            {
+                "chapter": 1,
+                "content": CHAPTER_1_CONTENT,
+                "summary": CHAPTER_1_SUMMARY,
+                "title": "觉醒",
+            }
+        )
         chapter_file = shenmi_project / "chapters" / "chapter-001.md"
         assert chapter_file.exists()
         text = chapter_file.read_text(encoding="utf-8")
@@ -926,29 +936,35 @@ class TestChapter2Generation:
 
     def test_save_chapter2(self, shenmi_project):
         """应成功保存仿写第2章。"""
-        save_chapter.invoke({
-            "chapter": 1,
-            "content": CHAPTER_1_CONTENT,
-            "summary": CHAPTER_1_SUMMARY,
-            "title": "觉醒",
-        })
-        result = save_chapter.invoke({
-            "chapter": 2,
-            "content": CHAPTER_2_CONTENT,
-            "summary": CHAPTER_2_SUMMARY,
-            "title": "银枫学院",
-        })
+        save_chapter.invoke(
+            {
+                "chapter": 1,
+                "content": CHAPTER_1_CONTENT,
+                "summary": CHAPTER_1_SUMMARY,
+                "title": "觉醒",
+            }
+        )
+        result = save_chapter.invoke(
+            {
+                "chapter": 2,
+                "content": CHAPTER_2_CONTENT,
+                "summary": CHAPTER_2_SUMMARY,
+                "title": "银枫学院",
+            }
+        )
         assert "保存成功" in result
         assert "2" in result
 
     def test_chapter2_file_on_disk(self, shenmi_project):
         """第2章应写入磁盘文件。"""
-        save_chapter.invoke({
-            "chapter": 2,
-            "content": CHAPTER_2_CONTENT,
-            "summary": CHAPTER_2_SUMMARY,
-            "title": "银枫学院",
-        })
+        save_chapter.invoke(
+            {
+                "chapter": 2,
+                "content": CHAPTER_2_CONTENT,
+                "summary": CHAPTER_2_SUMMARY,
+                "title": "银枫学院",
+            }
+        )
         chapter_file = shenmi_project / "chapters" / "chapter-002.md"
         assert chapter_file.exists()
         text = chapter_file.read_text(encoding="utf-8")
@@ -974,13 +990,16 @@ class TestChapter2Generation:
         # 3. 体验暖流
         warmth_pos = content.find("暖流")
         # 4. 注意到弟弟变化
-        change_pos = content.find("语气变冷") if content.find("语气变冷") > 0 else content.find("冷了一点点")
+        change_pos = (
+            content.find("语气变冷") if content.find("语气变冷") > 0 else content.find("冷了一点点")
+        )
         # 5. 自我怀疑
         doubt_pos = content.find("和刚才有关")
         assert discover_pos > 0 and harvest_pos > 0 and warmth_pos > 0
         assert change_pos > 0 and doubt_pos > 0
-        assert discover_pos < harvest_pos < warmth_pos < change_pos < doubt_pos, \
+        assert discover_pos < harvest_pos < warmth_pos < change_pos < doubt_pos, (
             "金手指揭示节奏应为：看到雾气→凝晶→暖流→弟弟变化→怀疑"
+        )
 
     def test_chapter2_no_numerical_stats(self, shenmi_project):
         """第2章不应包含数值型属性（如0.28、0.35等小数点数值模式）。"""
@@ -1032,12 +1051,14 @@ class TestGenerationContext:
     def test_context_ch2_includes_ch1_summary(self, shenmi_project):
         """第2章上下文应包含第1章摘要。"""
         index_source.invoke({})
-        save_chapter.invoke({
-            "chapter": 1,
-            "content": CHAPTER_1_CONTENT,
-            "summary": CHAPTER_1_SUMMARY,
-            "title": "觉醒",
-        })
+        save_chapter.invoke(
+            {
+                "chapter": 1,
+                "content": CHAPTER_1_CONTENT,
+                "summary": CHAPTER_1_SUMMARY,
+                "title": "觉醒",
+            }
+        )
         ctx = get_generation_context.invoke({"chapter": 2})
         assert "林夕" in ctx
         assert "银枫" in ctx or "艾琳" in ctx
@@ -1092,18 +1113,22 @@ class TestFullImitationWorkflow:
         assert "林夕/艾琳" in ctx1  # 角色映射
 
         # Step 6: 保存仿写章节
-        save_chapter.invoke({
-            "chapter": 1,
-            "content": CHAPTER_1_CONTENT,
-            "summary": CHAPTER_1_SUMMARY,
-            "title": "觉醒",
-        })
-        save_chapter.invoke({
-            "chapter": 2,
-            "content": CHAPTER_2_CONTENT,
-            "summary": CHAPTER_2_SUMMARY,
-            "title": "银枫学院",
-        })
+        save_chapter.invoke(
+            {
+                "chapter": 1,
+                "content": CHAPTER_1_CONTENT,
+                "summary": CHAPTER_1_SUMMARY,
+                "title": "觉醒",
+            }
+        )
+        save_chapter.invoke(
+            {
+                "chapter": 2,
+                "content": CHAPTER_2_CONTENT,
+                "summary": CHAPTER_2_SUMMARY,
+                "title": "银枫学院",
+            }
+        )
 
         # Step 7: 第2章上下文应包含第1章摘要
         ctx2 = get_generation_context.invoke({"chapter": 2})
@@ -1126,3 +1151,147 @@ class TestFullImitationWorkflow:
         assert (shenmi_project / "analysis" / "power_system.md").exists()
         assert (shenmi_project / "analysis" / "adaptation_plan.md").exists()
         assert (shenmi_project / "analysis" / "adaptation_proposals.md").exists()
+
+
+# ===========================================================================
+# 第六部分：写作经验库（SkillRL 经验蒸馏）
+# ===========================================================================
+class TestSkillLibrary:
+    """测试用户反馈技能库功能。"""
+
+    def test_record_success_pattern(self, shenmi_project):
+        """应成功记录成功模式。"""
+        result = record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "success_pattern",
+                "category": "writing",
+                "content": "五感交织描写效果好，读者反馈沉浸感强",
+            }
+        )
+        assert "写作经验已记录" in result
+        assert "成功模式" in result
+
+    def test_record_lesson_learned(self, shenmi_project):
+        """应成功记录经验教训。"""
+        result = record_writing_skill.invoke(
+            {
+                "chapter": 2,
+                "skill_type": "lesson_learned",
+                "category": "pacing",
+                "content": "节奏太快，缺少舒缓过渡段",
+            }
+        )
+        assert "写作经验已记录" in result
+        assert "经验教训" in result
+
+    def test_invalid_skill_type(self, shenmi_project):
+        """无效的 skill_type 应返回错误。"""
+        result = record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "invalid_type",
+                "category": "writing",
+                "content": "test",
+            }
+        )
+        assert "错误" in result
+        assert "skill_type" in result
+
+    def test_invalid_category(self, shenmi_project):
+        """无效的 category 应返回错误。"""
+        result = record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "success_pattern",
+                "category": "invalid_cat",
+                "content": "test",
+            }
+        )
+        assert "错误" in result
+        assert "category" in result
+
+    def test_content_truncation(self, shenmi_project):
+        """超过200字的 content 应被截断。"""
+        long_content = "这是一段很长的经验描述" * 30  # ~300 chars
+        result = record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "success_pattern",
+                "category": "description",
+                "content": long_content,
+            }
+        )
+        assert "写作经验已记录" in result
+        # Verify truncation in database
+        db = _get_db()
+        with db._connection() as conn:
+            row = conn.execute(
+                "SELECT content FROM imitate_skill_library ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert len(row[0]) <= 200
+
+    def test_build_skill_library_prompt_empty(self, shenmi_project):
+        """空表应返回空字符串。"""
+        db = _get_db()
+        result = _build_skill_library_prompt(db, 1)
+        assert result == ""
+
+    def test_build_skill_library_prompt_with_data(self, shenmi_project):
+        """有数据时应返回格式化的经验库提示。"""
+        record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "success_pattern",
+                "category": "writing",
+                "content": "五感交织描写效果好",
+            }
+        )
+        record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "lesson_learned",
+                "category": "pacing",
+                "content": "节奏太快需要舒缓",
+            }
+        )
+        db = _get_db()
+        result = _build_skill_library_prompt(db, 2)
+        assert "写作经验库" in result
+        assert "成功模式" in result
+        assert "经验教训" in result
+        assert "五感交织" in result
+        assert "节奏太快" in result
+
+    def test_skill_library_in_generation_context(self, shenmi_project):
+        """技能库数据应出现在 get_generation_context 返回中。"""
+        record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "success_pattern",
+                "category": "writing",
+                "content": "环境映射情绪的写法用户很喜欢",
+            }
+        )
+        ctx = get_generation_context.invoke({"chapter": 2})
+        assert "写作经验库" in ctx
+        assert "环境映射情绪" in ctx
+
+    def test_record_with_source_feedback(self, shenmi_project):
+        """应支持记录用户原始反馈。"""
+        result = record_writing_skill.invoke(
+            {
+                "chapter": 1,
+                "skill_type": "success_pattern",
+                "category": "character",
+                "content": "动作性格化刻画里昂效果很好",
+                "source_feedback": "里昂的冷淡表现写得很到位",
+            }
+        )
+        assert "写作经验已记录" in result
+        db = _get_db()
+        with db._connection() as conn:
+            row = conn.execute(
+                "SELECT source_feedback FROM imitate_skill_library ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert "冷淡" in row[0]

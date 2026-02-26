@@ -43,15 +43,16 @@ def _strip_markdown_formatting(text: str) -> str:
         Text with markdown inline formatting removed.
     """
     # Bold-italic (***text*** or ___text___)
-    text = re.sub(r'\*{3}(.+?)\*{3}', r'\1', text)
-    text = re.sub(r'_{3}(.+?)_{3}', r'\1', text)
+    text = re.sub(r"\*{3}(.+?)\*{3}", r"\1", text)
+    text = re.sub(r"_{3}(.+?)_{3}", r"\1", text)
     # Bold (**text** or __text__)
-    text = re.sub(r'\*{2}(.+?)\*{2}', r'\1', text)
-    text = re.sub(r'_{2}(.+?)_{2}', r'\1', text)
+    text = re.sub(r"\*{2}(.+?)\*{2}", r"\1", text)
+    text = re.sub(r"_{2}(.+?)_{2}", r"\1", text)
     # Italic (*text*) — avoid matching math like 2*3
-    text = re.sub(r'(?<![0-9*])\*([^\s*][^*]*?[^\s*])\*(?![0-9*])', r'\1', text)
-    text = re.sub(r'(?<![0-9*])\*([^\s*])\*(?![0-9*])', r'\1', text)
+    text = re.sub(r"(?<![0-9*])\*([^\s*][^*]*?[^\s*])\*(?![0-9*])", r"\1", text)
+    text = re.sub(r"(?<![0-9*])\*([^\s*])\*(?![0-9*])", r"\1", text)
     return text
+
 
 if TYPE_CHECKING:
     from deepagents_cli.novel.database import NovelDatabase

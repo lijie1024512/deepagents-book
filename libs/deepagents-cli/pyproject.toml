@@ -117,7 +117,7 @@ ignore-var-parameters = true
     "INP001",  # Implicit namespace package
     "PLR2004", # Magic value comparisons are fine in tests
 ]
-"deepagents_cli/agent.py" = ["E501", "PLR0912", "PLR2004", "SIM108"]
+"deepagents_cli/agent.py" = ["ARG001", "E501", "PLR0912", "PLR0915", "PLR2004", "RUF001", "RUF002", "RUF003", "SIM108"]
 "deepagents_cli/app.py" = ["E501", "PLR0915", "SIM108", "TC001", "TC002", "TC003"]
 "deepagents_cli/cli.py" = ["E501", "EM101", "EM102", "PLR0912", "PLR0915", "T201", "TC002", "TC003", "TRY003"]
 "deepagents_cli/clipboard.py" = ["BLE001", "PTH123", "S112", "TRY300"]
@@ -177,9 +177,11 @@ ignore-var-parameters = true
 "tests/unit_tests/test_chunker.py" = ["ANN001", "ARG002", "RUF001"]
 "tests/unit_tests/test_imitate_tools.py" = ["ANN001", "ARG002", "E501", "RUF001", "RUF003"]
 "deepagents_cli/novel/chunker.py" = ["FBT001", "FBT002", "PLR0912", "PLR0915", "PLR2004", "TC003", "TRY300"]
-"deepagents_cli/novel/imitate_tools.py" = ["ANN201", "ARG001", "D103", "D415", "DTZ005", "E501", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "PLR0915", "PLR2004", "RUF001", "RUF002", "RUF003", "S608", "TC003", "TRY003", "TRY300"]
-"deepagents_cli/novel/imitate_middleware.py" = ["ANN204", "ANN401", "E501", "PLR2004", "RUF001", "RUF002", "RUF003", "TC003"]
+"deepagents_cli/novel/imitate_tools.py" = ["ANN201", "ARG001", "D103", "D415", "DTZ005", "E501", "EM101", "EM102", "FBT001", "FBT002", "PLR0911", "PLR0912", "PLR0915", "PLR2004", "RUF001", "RUF002", "RUF003", "S608", "TC003", "TRY003", "TRY300"]
+"deepagents_cli/novel/imitate_middleware.py" = ["ANN204", "ANN401", "ARG002", "BLE001", "E501", "N806", "PLR2004", "PTH123", "RUF001", "RUF002", "RUF003", "TC003"]
+"deepagents_cli/novel/imitate_history_backend.py" = ["ARG002", "FBT001", "FBT002", "PLR0912", "PLR0915", "PLR2004", "RUF001", "RUF002", "RUF003", "S608"]
 "deepagents_cli/novel/commands.py" = ["ANN001", "ANN201", "ANN202", "E501", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "PLR0915", "RUF001", "RUF003", "TC003", "TRY003", "TRY300"]
+"deepagents_cli/skills/novel-text-generator/scripts/text_quality_checker.py" = ["ANN201", "D103", "D212", "D415", "EXE001", "F841", "INP001", "PLR2004", "PLR1722", "RET502", "RUF001", "RUF002", "RUF003", "T201"]
 
 [tool.pytest.ini_options]
 timeout = 10  # Default timeout for all tests (can be overridden per-test)
