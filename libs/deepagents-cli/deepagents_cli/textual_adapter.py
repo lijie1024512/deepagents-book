@@ -251,6 +251,7 @@ async def execute_task_textual(
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
+    early_status_tool_keys: set[str | int] = set()
     tool_call_buffers: dict[str | int, dict] = {}
 
     # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
@@ -480,6 +481,14 @@ async def execute_task_textual(
                                 buffer["name"] = chunk_name
                             if chunk_id:
                                 buffer["id"] = chunk_id
+
+                            # Show early feedback when tool call name is first seen
+                            if chunk_name and buffer_key not in early_status_tool_keys:
+                                early_status_tool_keys.add(buffer_key)
+                                adapter._update_status(f"Preparing {chunk_name}...")
+                                # Re-show thinking spinner during tool arg accumulation
+                                if adapter._show_thinking:
+                                    await adapter._show_thinking()
 
                             if isinstance(chunk_args, dict):
                                 buffer["args"] = chunk_args
