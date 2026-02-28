@@ -429,10 +429,10 @@ def read_source_chapter(chapter: int) -> str:
         f"{'=' * 60}\n"
         f"⚠️ 仿写铁律（违反任何一条都是抄袭）：\n"
         f"1. 禁止复制源文的句子——哪怕只是换个人名也是抄袭\n"
-        f"2. 禁止照搬源文的场景顺序——你必须按【改编计划】的场景来写\n"
-        f"3. 禁止使用源文的描写原句——你要用改编计划里的新世界观元素重新描写\n"
+        f"2. 禁止照搬源文的场景顺序——你必须按改编方向的场景来写\n"
+        f"3. 禁止使用源文的描写原句——你要用改编世界观的新元素重新描写\n"
         f"4. 源文只是技法老师：学它的描写密度、文风节奏、刻画手法\n"
-        f"5. 你的内容必须来自改编计划：新角色、新金手指、新剧情事件\n"
+        f"5. 你的内容必须来自改编设定：新角色、新金手指、新剧情事件\n"
         f"6. 青出于蓝胜于蓝：源文N个描写维度，你要N+1个维度，质量必须超越源文\n"
         f"{'=' * 60}"
     )
@@ -523,14 +523,14 @@ def search_source(keyword: str, max_results: int = 10) -> str:
 # ---------------------------------------------------------------------------
 @tool
 def save_analysis(key: str, content: str) -> str:
-    """保存分析结果。可以保存任何类型的分析：DNA分析、角色映射、改编计划等。
+    """保存分析结果。可以保存任何类型的分析：世界观设定、角色映射、金手指设计等。
 
     常用key:
-    - "dna_analysis": 源小说DNA分析（文风、结构、体系、情节骨架）
+    - "source_overview": 源文全貌（源文金手指+源文世界观）
+    - "world_setting": 完整世界观设定（社会结构/能力体系/资源经济/地理空间/势力格局/隐藏设定），写作阶段每章自动注入
     - "character_mapping": 角色映射表
     - "power_system": 新金手指设计
-    - "adaptation_plan": 章节级改编计划
-    - "world_setting": 世界观设定
+    - "world_atmosphere": 题材氛围DNA
     - 其他自定义key
 
     Args:
@@ -864,55 +864,6 @@ def record_writing_skill(
 
 
 # ---------------------------------------------------------------------------
-# Helper: extract chapter-specific plan from markdown
-# ---------------------------------------------------------------------------
-def _extract_chapter_plan(plan_text: str, chapter: int) -> str | None:
-    """Extract chapter-specific adaptation plan from markdown text.
-
-    Looks for sections like "第N章改编要点", "第N章", "章节N" etc.
-
-    Args:
-        plan_text: Full adaptation plan markdown.
-        chapter: Chapter number to extract.
-
-    Returns:
-        Chapter-specific plan text, or None if not found.
-    """
-    # Try various heading patterns for this chapter
-    # NOTE: Use string concat (not f-strings) for regex quantifiers like {1,4}
-    # because f-strings interpret {1,4} as a Python set literal.
-    patterns = [
-        r"(#{1,4}\s*第" + str(chapter) + r"章[^\n]*\n)",
-        r"(#{1,4}\s*Chapter\s*" + str(chapter) + r"[^\n]*\n)",
-        r"(第" + str(chapter) + r"章改编要点[^\n]*\n)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, plan_text, re.IGNORECASE)
-        if match:
-            start = match.start()
-            # Find next section heading at same or higher level
-            heading_level = match.group().count("#")
-            if heading_level > 0:
-                next_pattern = r"^#{1," + str(heading_level) + r"}\s"
-                next_heading = re.search(
-                    next_pattern,
-                    plan_text[match.end() :],
-                    re.MULTILINE,
-                )
-            else:
-                next_heading = re.search(
-                    r"^#{1,4}\s|^第\d+章",
-                    plan_text[match.end() :],
-                    re.MULTILINE,
-                )
-            end = match.end() + next_heading.start() if next_heading else len(plan_text)
-            return plan_text[start:end].strip()
-
-    return None
-
-
-# ---------------------------------------------------------------------------
 # Tool 8: Get generation context
 # ---------------------------------------------------------------------------
 def _build_sliding_summary(db: NovelDatabase, current_chapter: int) -> str:
@@ -967,21 +918,48 @@ def _build_sliding_summary(db: NovelDatabase, current_chapter: int) -> str:
     return "\n".join(lines)
 
 
-def _extract_relevant_characters(chapter_plan: str | None, full_mapping: str) -> str:
-    """Extract only characters mentioned in the chapter plan.
+def _extract_relevant_characters(db: NovelDatabase, current_chapter: int, full_mapping: str) -> str:
+    """Extract characters relevant to the current chapter context.
 
-    If chapter_plan is available, filters the character mapping to only include
-    characters whose names appear in the plan. Falls back to full mapping
-    (truncated) if no plan is available.
+    Uses recent chapter summaries and character evolution to determine which
+    characters are relevant. Falls back to truncated full mapping if no
+    prior context is available.
 
     Args:
-        chapter_plan: The chapter-specific adaptation plan text.
+        db: Database instance.
+        current_chapter: The chapter being generated.
         full_mapping: The complete character mapping text.
 
     Returns:
         Filtered or truncated character mapping.
     """
-    if not chapter_plan or not full_mapping:
+    if not full_mapping:
+        return full_mapping
+
+    # Build context from recent 3 chapters' summaries + character evolution
+    context_parts: list[str] = []
+    with db._connection() as conn:
+        summaries = conn.execute(
+            "SELECT chapter, summary FROM imitate_chapters "
+            "WHERE chapter >= ? AND chapter < ? ORDER BY chapter",
+            (max(1, current_chapter - 3), current_chapter),
+        ).fetchall()
+        char_evos = conn.execute(
+            "SELECT character_name, changes FROM imitate_character_evolution "
+            "WHERE chapter >= ? AND chapter < ? ORDER BY chapter",
+            (max(1, current_chapter - 3), current_chapter),
+        ).fetchall()
+
+    for _, summary in summaries:
+        if summary:
+            context_parts.append(summary)
+    for name, changes in char_evos:
+        context_parts.append(f"{name} {changes}")
+
+    context_text = " ".join(context_parts)
+
+    if not context_text:
+        # No prior data — fallback to truncated full mapping
         if len(full_mapping) > 2000:
             return (
                 full_mapping[:2000]
@@ -989,17 +967,15 @@ def _extract_relevant_characters(chapter_plan: str | None, full_mapping: str) ->
             )
         return full_mapping
 
-    # Extract character names from mapping (look for patterns like "→ 新名字" or "名字：")
+    # Extract character names from mapping and filter by context
     lines = full_mapping.split("\n")
     relevant_lines: list[str] = []
     current_section: list[str] = []
     section_relevant = False
 
     for line in lines:
-        # Detect section headers or character entries
         stripped = line.strip()
         if stripped.startswith(("#", "---")):
-            # Flush previous section if relevant
             if section_relevant and current_section:
                 relevant_lines.extend(current_section)
             current_section = [line]
@@ -1007,15 +983,12 @@ def _extract_relevant_characters(chapter_plan: str | None, full_mapping: str) ->
             continue
 
         current_section.append(line)
-        # Check if any word from this line appears in the chapter plan
-        # This catches character names mentioned in the plan
         words = re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z]{2,}", stripped)
         for word in words:
-            if word in chapter_plan and len(word) >= 2:
+            if word in context_text and len(word) >= 2:
                 section_relevant = True
                 break
 
-    # Flush last section
     if section_relevant and current_section:
         relevant_lines.extend(current_section)
 
@@ -1025,7 +998,6 @@ def _extract_relevant_characters(chapter_plan: str | None, full_mapping: str) ->
             result = result[:2000] + "\n...(已截取)"
         return result
 
-    # Fallback: return truncated full mapping
     if len(full_mapping) > 2000:
         return (
             full_mapping[:2000] + "\n...(已截取，完整版用 get_analysis('character_mapping') 查看)"
@@ -1033,7 +1005,7 @@ def _extract_relevant_characters(chapter_plan: str | None, full_mapping: str) ->
     return full_mapping
 
 
-def _build_innovation_prompt(db: NovelDatabase, chapter: int, chapter_plan: str | None) -> str:
+def _build_innovation_prompt(db: NovelDatabase, chapter: int) -> str:
     """Generate an innovation prompt based on recent creative patterns.
 
     Analyzes the creative_log to identify which categories have been
@@ -1042,7 +1014,6 @@ def _build_innovation_prompt(db: NovelDatabase, chapter: int, chapter_plan: str 
     Args:
         db: Database instance.
         chapter: Current chapter number.
-        chapter_plan: Chapter-specific plan text.
 
     Returns:
         Innovation prompt string, or empty string if no prior data.
@@ -1110,17 +1081,30 @@ def _build_innovation_prompt(db: NovelDatabase, chapter: int, chapter_plan: str 
                 ]
                 parts.append(f"建议本章加强：{'、'.join(suggest_cn)}方面的创新")
 
-    # Check golden finger staleness
+    # Check golden finger staleness — with world-setting-driven hints
     if power_evos:
         last_power_chapter = power_evos[0][0]
         gap = chapter - last_power_chapter
         if gap >= 3:
-            parts.append(f"金手指已经 {gap} 章没有演化，考虑在本章展示新能力或发现新限制")
+            hint = f"金手指已经 {gap} 章没有演化。"
+            # Try to suggest a specific direction from world setting
+            with db._connection() as conn:
+                ws_row = conn.execute(
+                    "SELECT content FROM imitate_analysis WHERE key='world_setting'"
+                ).fetchone()
+            if ws_row and ws_row[0]:
+                hint += (
+                    "查阅世界观设定（get_analysis('world_setting')），"
+                    "找一个主角尚未接触的世界层面（新地域/新阶层/新规则），让金手指从中长出新能力或碰到新限制"
+                )
+            else:
+                hint += "考虑在本章展示新能力或发现新限制"
+            parts.append(hint)
     elif chapter > 2:
         parts.append("金手指尚未有演化记录，考虑在本章开始追踪其成长")
 
     # Character development hints
-    if char_evolutions and chapter_plan:
+    if char_evolutions:
         recent_chars = {ce[0] for ce in char_evolutions}
         if recent_chars:
             parts.append(f"近期有演化记录的角色：{'、'.join(list(recent_chars)[:5])}")
@@ -1198,7 +1182,7 @@ def _build_skill_library_prompt(db: NovelDatabase, chapter: int) -> str:
 def get_generation_context(chapter: int) -> str:
     """获取指定章节的生成上下文。
 
-    包括：改编计划、本章涉及角色（含演化轨迹）、金手指当前状态（含演化历史）、
+    包括：改编世界观、本章涉及角色（含演化轨迹）、金手指当前状态（含演化历史）、
     前文脉络（滑动窗口）、创新提示。
     不包含源文原文（已通过 read_source_chapter 单独阅读，避免重复占用 token）。
 
@@ -1214,21 +1198,16 @@ def get_generation_context(chapter: int) -> str:
 
     parts = [f"=== 第{chapter}章 生成上下文 ==="]
 
-    # 1. Chapter-specific adaptation plan (highest priority, shown first)
-    chapter_plan: str | None = None
+    # 1. World setting (replaces adaptation_plan — injected for every chapter)
     with db._connection() as conn:
-        row = conn.execute(
-            "SELECT content FROM imitate_analysis WHERE key='adaptation_plan'"
+        ws_row = conn.execute(
+            "SELECT content FROM imitate_analysis WHERE key='world_setting'"
         ).fetchone()
-    if row and row[0]:
-        plan_text = row[0]
-        chapter_plan = _extract_chapter_plan(plan_text, chapter)
-        if chapter_plan:
-            parts.extend(["", "## 本章改编计划（核心目标）", chapter_plan])
-        else:
-            if len(plan_text) > 4000:
-                plan_text = plan_text[:4000] + "\n\n...(改编计划已截取前4000字)"
-            parts.extend(["", "## 改编计划（完整）", plan_text])
+    if ws_row and ws_row[0]:
+        ws_text = ws_row[0]
+        if len(ws_text) > 2000:
+            ws_text = ws_text[:2000] + "\n...(完整版用 get_analysis('world_setting') 查看)"
+        parts.extend(["", "## 改编世界观", ws_text])
 
     # 2. Relevant characters + evolution trajectory
     with db._connection() as conn:
@@ -1236,7 +1215,7 @@ def get_generation_context(chapter: int) -> str:
             "SELECT content FROM imitate_analysis WHERE key='character_mapping'"
         ).fetchone()
     if mapping_row and mapping_row[0]:
-        relevant_mapping = _extract_relevant_characters(chapter_plan, mapping_row[0])
+        relevant_mapping = _extract_relevant_characters(db, chapter, mapping_row[0])
         parts.extend(["", "## 本章涉及角色", relevant_mapping])
 
         # Append character evolution history
@@ -1321,7 +1300,7 @@ def get_generation_context(chapter: int) -> str:
         parts.extend(["", skill_prompt])
 
     # 7. Innovation prompt (based on creative log analysis)
-    innovation_prompt = _build_innovation_prompt(db, chapter, chapter_plan)
+    innovation_prompt = _build_innovation_prompt(db, chapter)
     if innovation_prompt:
         parts.extend(["", innovation_prompt])
 

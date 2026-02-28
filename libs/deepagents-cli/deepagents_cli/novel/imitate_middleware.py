@@ -2,7 +2,7 @@
 
 State-aware context injection for the agent-driven novel imitation workflow:
 1. Detects project state (planning vs generation) from database
-2. Planning phase: injects orchestrator Skill (DNA analysis, creative proposals)
+2. Planning phase: injects orchestrator Skill (world/GF design, creative proposals)
 3. Generation phase: injects generation guide Skill ONLY (focused writing instructions)
 4. Never injects both simultaneously — avoids attention dilution
 
@@ -161,8 +161,8 @@ class ImitateMemoryMiddleware(AgentMiddleware):
         """Detect current project phase from database state.
 
         Returns:
-            "planning" if no adaptation_plan exists yet,
-            "generation" if adaptation_plan + character_mapping exist.
+            "planning" if power_system does not exist yet,
+            "generation" if power_system exists.
         """
         db = _get_db()
         if db is None:
@@ -170,7 +170,7 @@ class ImitateMemoryMiddleware(AgentMiddleware):
 
         with db._connection() as conn:
             row = conn.execute(
-                "SELECT 1 FROM imitate_analysis WHERE key='adaptation_plan'"
+                "SELECT 1 FROM imitate_analysis WHERE key='power_system'"
             ).fetchone()
 
         return "generation" if row else "planning"
@@ -238,7 +238,7 @@ class ImitateMemoryMiddleware(AgentMiddleware):
         """Build context to inject into the system prompt.
 
         State-aware injection:
-        - Planning phase: inject orchestrator SKILL (DNA analysis, proposals)
+        - Planning phase: inject orchestrator SKILL (world/GF design, proposals)
         - Generation phase: inject generation SKILL ONLY (writing instructions)
         Never both simultaneously — prevents attention dilution.
         """
@@ -310,7 +310,7 @@ class ImitateMemoryMiddleware(AgentMiddleware):
                 "*分析与决策（与用户协作）*\n"
                 "1. read_source_chapter(chapter=N) → 精读源文\n"
                 "2. 向用户输出源文章节概述：主要事件 / 写作技法 / 情绪节奏 / 爽点\n"
-                "3. get_generation_context(chapter=N) → 获取改编计划+演化状态+前文脉络\n"
+                "3. get_generation_context(chapter=N) → 获取世界观+角色+金手指+前文脉络+创新提示\n"
                 "4. 结合概述+上下文 → 向用户提出2-3个改编方向（含场景拆分+技法应用+爽点设计）\n"
                 "5. 等待用户选择，用户可补充自己的想法\n\n"
                 "*写作与记录*\n"
@@ -328,7 +328,8 @@ class ImitateMemoryMiddleware(AgentMiddleware):
                 '- 某章详情 → read_file("/history/chapter-{N}.md")\n'
                 '- 角色轨迹 → read_file("/history/characters.md")\n'
                 '- 金手指演化 → read_file("/history/golden-finger.md")\n'
-                '- 写作经验 → read_file("/history/skills.md")'
+                '- 写作经验 → read_file("/history/skills.md")\n'
+                "- 完整世界观 → get_analysis('world_setting')（金手指演化时必查）"
             )
 
         return "\n".join(parts)

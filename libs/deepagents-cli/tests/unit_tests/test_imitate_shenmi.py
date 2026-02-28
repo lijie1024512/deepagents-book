@@ -357,6 +357,27 @@ POWER_SYSTEM = """## 新金手指设计：情绪炼金
 - 穿越变异：实验室事故中触碰高能感知矩阵，灵魂层面产生变异，获得感知情绪雾气的能力
 """
 
+WORLD_SETTING = """## 世界观设定（S+方案）
+
+## 社会结构
+亚路联邦采用贵族议会制，贵族占据社会上层，掌控学院、军队和资源分配。普通平民通过学院选拔可获得晋升机会。银枫学院是排名第五的贵族学院，招收少量平民子弟。
+
+## 能力体系规则
+异世界拥有"感知力"体系，少数人天生能感知到微弱的情绪能量场。正统修炼通过冥想和药剂增强感知力，情绪炼金术是被遗忘的古老分支。
+
+## 资源与经济
+制药工业是亚路联邦的支柱产业，梅瑟尔在一家中型制药公司任职。情绪晶体在黑市上价值极高，但大多数人不知道其存在。
+
+## 地理与空间
+银枫城位于联邦中部，以巨大的银枫树林闻名。银枫学院坐落在城市北区的山丘上。
+
+## 势力格局
+威斯曼帝国与亚路联邦长期对峙，银枫学院内部分为贵族派和实力派。
+
+## 隐藏设定与未解之谜
+情绪炼金术曾是古代文明的核心技术，但在千年前被禁止。银枫学院地下据传藏有古代遗迹。
+"""
+
 ADAPTATION_PLAN = json.dumps(
     [
         {
@@ -830,11 +851,11 @@ class TestPowerSystem:
         assert "情感麻木" in result
 
 
-class TestAdaptationPlan:
-    """测试章节级改编计划。"""
+class TestSaveAnalysis:
+    """测试通用 key-value 分析保存（save_analysis 是通用存储）。"""
 
     def test_save_adaptation_plan(self, shenmi_project):
-        """应成功保存改编计划。"""
+        """应成功保存改编计划（通用 key-value）。"""
         result = save_analysis.invoke({"key": "adaptation_plan", "content": ADAPTATION_PLAN})
         assert "保存成功" in result
 
@@ -1063,12 +1084,12 @@ class TestGenerationContext:
         assert "林夕" in ctx
         assert "银枫" in ctx or "艾琳" in ctx
 
-    def test_context_ch2_includes_adaptation_plan(self, shenmi_project):
-        """第2章上下文应包含改编计划。"""
+    def test_context_ch2_includes_world_setting(self, shenmi_project):
+        """第2章上下文应包含改编世界观。"""
         index_source.invoke({})
-        save_analysis.invoke({"key": "adaptation_plan", "content": ADAPTATION_PLAN})
+        save_analysis.invoke({"key": "world_setting", "content": WORLD_SETTING})
         ctx = get_generation_context.invoke({"chapter": 2})
-        assert "银枫学院" in ctx or "scene_mapping" in ctx
+        assert "改编世界观" in ctx
 
     def test_context_ch2_includes_power_system(self, shenmi_project):
         """第2章上下文应包含金手指设定。"""
@@ -1105,7 +1126,7 @@ class TestFullImitationWorkflow:
         save_analysis.invoke({"key": "dna_analysis", "content": DNA_ANALYSIS})
         save_analysis.invoke({"key": "character_mapping", "content": CHARACTER_MAPPING})
         save_analysis.invoke({"key": "power_system", "content": POWER_SYSTEM})
-        save_analysis.invoke({"key": "adaptation_plan", "content": ADAPTATION_PLAN})
+        save_analysis.invoke({"key": "world_setting", "content": WORLD_SETTING})
 
         # Step 5: 验证生成上下文
         ctx1 = get_generation_context.invoke({"chapter": 1})
@@ -1140,7 +1161,7 @@ class TestFullImitationWorkflow:
         assert "dna_analysis" in status
         assert "character_mapping" in status
         assert "power_system" in status
-        assert "adaptation_plan" in status
+        assert "world_setting" in status
         assert "adaptation_proposals" in status
 
         # Step 9: 验证磁盘文件
@@ -1149,7 +1170,7 @@ class TestFullImitationWorkflow:
         assert (shenmi_project / "analysis" / "dna_analysis.md").exists()
         assert (shenmi_project / "analysis" / "character_mapping.md").exists()
         assert (shenmi_project / "analysis" / "power_system.md").exists()
-        assert (shenmi_project / "analysis" / "adaptation_plan.md").exists()
+        assert (shenmi_project / "analysis" / "world_setting.md").exists()
         assert (shenmi_project / "analysis" / "adaptation_proposals.md").exists()
 
 
