@@ -1103,6 +1103,11 @@ def _build_innovation_prompt(db: NovelDatabase, chapter: int) -> str:
     elif chapter > 2:
         parts.append("金手指尚未有演化记录，考虑在本章开始追踪其成长")
 
+    # Always show current golden finger status (one-line summary)
+    if power_evos:
+        latest = power_evos[0]  # Already sorted by chapter DESC
+        parts.append(f"金手指当前状态（第{latest[0]}章）：{latest[1] or ''} {latest[2] or ''}")
+
     # Character development hints
     if char_evolutions:
         recent_chars = {ce[0] for ce in char_evolutions}
@@ -1182,8 +1187,8 @@ def _build_skill_library_prompt(db: NovelDatabase, chapter: int) -> str:
 def get_generation_context(chapter: int) -> str:
     """获取指定章节的生成上下文。
 
-    包括：改编世界观、本章涉及角色（含演化轨迹）、金手指当前状态（含演化历史）、
-    前文脉络（滑动窗口）、创新提示。
+    包括：本章涉及角色（含近期演化）、前文脉络（滑动窗口）、创新提示（含金手指状态）。
+    静态设定（世界观/金手指/氛围）不重复注入，按需通过 get_analysis 查阅。
     不包含源文原文（已通过 read_source_chapter 单独阅读，避免重复占用 token）。
 
     Args:
@@ -1198,18 +1203,7 @@ def get_generation_context(chapter: int) -> str:
 
     parts = [f"=== 第{chapter}章 生成上下文 ==="]
 
-    # 1. World setting (replaces adaptation_plan — injected for every chapter)
-    with db._connection() as conn:
-        ws_row = conn.execute(
-            "SELECT content FROM imitate_analysis WHERE key='world_setting'"
-        ).fetchone()
-    if ws_row and ws_row[0]:
-        ws_text = ws_row[0]
-        if len(ws_text) > 2000:
-            ws_text = ws_text[:2000] + "\n...(完整版用 get_analysis('world_setting') 查看)"
-        parts.extend(["", "## 改编世界观", ws_text])
-
-    # 2. Relevant characters + evolution trajectory
+    # 1. Relevant characters + evolution trajectory
     with db._connection() as conn:
         mapping_row = conn.execute(
             "SELECT content FROM imitate_analysis WHERE key='character_mapping'"
@@ -1218,11 +1212,13 @@ def get_generation_context(chapter: int) -> str:
         relevant_mapping = _extract_relevant_characters(db, chapter, mapping_row[0])
         parts.extend(["", "## 本章涉及角色", relevant_mapping])
 
-        # Append character evolution history
+        # Append character evolution history (recent 3 chapters only)
         with db._connection() as conn:
             char_evos = conn.execute(
                 "SELECT character_name, chapter, changes, personality_shift, relationship_changes "
-                "FROM imitate_character_evolution ORDER BY chapter"
+                "FROM imitate_character_evolution "
+                "WHERE chapter >= ? ORDER BY chapter",
+                (max(1, chapter - 3),),
             ).fetchall()
         if char_evos:
             evo_lines = ["", "### 角色演化轨迹"]
@@ -1239,70 +1235,29 @@ def get_generation_context(chapter: int) -> str:
                 evo_lines.extend(evo_parts_inner)
             parts.extend(evo_lines)
 
-    # 3. Golden finger: base design + evolution history (alive, not static)
-    with db._connection() as conn:
-        power_row = conn.execute(
-            "SELECT content FROM imitate_analysis WHERE key='power_system'"
-        ).fetchone()
-    if power_row and power_row[0]:
-        power_text = power_row[0]
-        # Compress base design if very long
-        if len(power_text) > 1500:
-            power_text = (
-                power_text[:1500]
-                + "\n...(基础设计已压缩，完整版用 get_analysis('power_system') 查看)"
-            )
-        parts.extend(["", "## 金手指", "### 基础设计", power_text])
-
-        # Append evolution history
-        with db._connection() as conn:
-            power_evos = conn.execute(
-                "SELECT chapter, ability_unlocked, limitation_discovered, usage_context, evolution_note "
-                "FROM imitate_power_evolution ORDER BY chapter"
-            ).fetchall()
-        if power_evos:
-            parts.append("\n### 演化历程")
-            for ch, ability, limitation, context, note in power_evos:
-                evo_line = f"- 第{ch}章:"
-                if ability:
-                    evo_line += f" 【能力】{ability}"
-                if limitation:
-                    evo_line += f" 【限制】{limitation}"
-                if context:
-                    evo_line += f" 【情境】{context}"
-                if note:
-                    evo_line += f" 【变化】{note}"
-                parts.append(evo_line)
-
-            # Show current state summary
-            latest = power_evos[-1]
-            parts.append(f"\n当前状态（第{latest[0]}章后）：已解锁能力 {len(power_evos)} 次演化")
-
-    # 4. World atmosphere (compressed to key points)
-    with db._connection() as conn:
-        atmo_row = conn.execute(
-            "SELECT content FROM imitate_analysis WHERE key='world_atmosphere'"
-        ).fetchone()
-    if atmo_row and atmo_row[0]:
-        atmo_text = atmo_row[0]
-        if len(atmo_text) > 1000:
-            atmo_text = atmo_text[:1000] + "\n...(完整版用 get_analysis('world_atmosphere') 查看)"
-        parts.extend(["", "## 氛围速查", atmo_text])
-
-    # 5. Sliding window summary (global + recent 3)
+    # 3. Sliding window summary (global + recent 3)
     summary_text = _build_sliding_summary(db, chapter)
     if summary_text:
         parts.extend(["", "## 前文脉络", summary_text])
 
-    # 6. Skill library (user feedback distillation)
+    # 4. Skill library (user feedback distillation)
     skill_prompt = _build_skill_library_prompt(db, chapter)
     if skill_prompt:
         parts.extend(["", skill_prompt])
 
-    # 7. Innovation prompt (based on creative log analysis)
+    # 5. Innovation prompt (based on creative log analysis)
     innovation_prompt = _build_innovation_prompt(db, chapter)
     if innovation_prompt:
         parts.extend(["", innovation_prompt])
+
+    # 6. Reference material hint (lightweight reminder instead of full injection)
+    parts.extend([
+        "",
+        "## 按需查阅",
+        "- get_analysis('world_setting') — 完整世界观设定",
+        "- get_analysis('power_system') — 金手指完整设计与进阶路线",
+        "- get_analysis('world_atmosphere') — 题材氛围DNA",
+    ])
 
     return "\n".join(parts)
 

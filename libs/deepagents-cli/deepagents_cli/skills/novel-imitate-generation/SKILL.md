@@ -46,7 +46,7 @@ inject_references:
 ## 工具流程（每章仅3步）
 
 1. `read_source_chapter(chapter=N)` → 精读源文，学习写作技法
-2. `get_generation_context(chapter=N)` → 获取世界观+角色映射+金手指+氛围DNA+前文摘要
+2. `get_generation_context(chapter=N)` → 获取角色+前文脉络+创新提示（世界观/金手指/氛围按需 get_analysis 查阅）
 3. 写作 → `save_chapter(chapter=N, content=..., summary=..., title=...)` → 直接回复用户
 
 **save_chapter 之后不要再调用任何工具。**

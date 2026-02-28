@@ -310,7 +310,7 @@ class ImitateMemoryMiddleware(AgentMiddleware):
                 "*分析与决策（与用户协作）*\n"
                 "1. read_source_chapter(chapter=N) → 精读源文\n"
                 "2. 向用户输出源文章节概述：主要事件 / 写作技法 / 情绪节奏 / 爽点\n"
-                "3. get_generation_context(chapter=N) → 获取世界观+角色+金手指+前文脉络+创新提示\n"
+                "3. get_generation_context(chapter=N) → 获取角色+前文脉络+创新提示（世界观/金手指按需 get_analysis 查阅）\n"
                 "4. 结合概述+上下文 → 向用户提出2-3个改编方向（含场景拆分+技法应用+爽点设计）\n"
                 "5. 等待用户选择，用户可补充自己的想法\n\n"
                 "*写作与记录*\n"

@@ -1084,19 +1084,18 @@ class TestGenerationContext:
         assert "林夕" in ctx
         assert "银枫" in ctx or "艾琳" in ctx
 
-    def test_context_ch2_includes_world_setting(self, shenmi_project):
-        """第2章上下文应包含改编世界观。"""
+    def test_context_ch2_includes_reference_hints(self, shenmi_project):
+        """第2章上下文应包含按需查阅提示。"""
         index_source.invoke({})
-        save_analysis.invoke({"key": "world_setting", "content": WORLD_SETTING})
         ctx = get_generation_context.invoke({"chapter": 2})
-        assert "改编世界观" in ctx
+        assert "按需查阅" in ctx
+        assert "world_setting" in ctx
 
-    def test_context_ch2_includes_power_system(self, shenmi_project):
-        """第2章上下文应包含金手指设定。"""
+    def test_context_ch2_includes_power_reference(self, shenmi_project):
+        """第2章上下文应包含金手指查阅提示。"""
         index_source.invoke({})
-        save_analysis.invoke({"key": "power_system", "content": POWER_SYSTEM})
         ctx = get_generation_context.invoke({"chapter": 2})
-        assert "情绪炼金" in ctx or "晶体" in ctx
+        assert "power_system" in ctx
 
 
 # ===========================================================================
